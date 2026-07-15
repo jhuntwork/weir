@@ -24,7 +24,7 @@ type RunResult struct {
 
 // Execute runs a parsed command through the whitelist, streams output
 // through filters, and returns a structured result.
-func Execute(ctx context.Context, cfg *Config, p *Parsed, timeoutSec int) (*RunResult, error) {
+func Execute(ctx context.Context, cfg *Config, p *Parsed, timeoutSec int, maxLines int) (*RunResult, error) {
 	// Validate against whitelist.
 	basename := filepath.Base(p.Command)
 	if !cfg.IsAllowed(basename) {
@@ -67,7 +67,6 @@ func Execute(ctx context.Context, cfg *Config, p *Parsed, timeoutSec int) (*RunR
 	var output string
 	filtered := len(p.Filters) > 0
 	truncated := false
-	maxLines := cfg.MaxOutputFor(basename)
 
 	if filtered {
 		// Stream stdout through the filter chain.

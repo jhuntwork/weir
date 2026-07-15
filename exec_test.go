@@ -26,7 +26,7 @@ func TestExecuteAllowed(t *testing.T) {
 		Args:    []string{"hello", "world"},
 	}
 
-	result, err := Execute(context.Background(), cfg, parsed, 10)
+	result, err := Execute(context.Background(), cfg, parsed, 10, 1000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestExecuteBlocked(t *testing.T) {
 		Args:    []string{"-rf", "/"},
 	}
 
-	_, err := Execute(context.Background(), cfg, parsed, 10)
+	_, err := Execute(context.Background(), cfg, parsed, 10, 1000)
 	if err == nil {
 		t.Fatal("expected error for blocked command")
 	}
@@ -62,7 +62,7 @@ func TestExecuteWithEnv(t *testing.T) {
 		Env:     map[string]string{"TEST_VAR": "weir_test"},
 	}
 
-	result, err := Execute(context.Background(), cfg, parsed, 10)
+	result, err := Execute(context.Background(), cfg, parsed, 10, 1000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestExecuteWithFilters(t *testing.T) {
 		},
 	}
 
-	result, err := Execute(context.Background(), cfg, parsed, 10)
+	result, err := Execute(context.Background(), cfg, parsed, 10, 1000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestExecuteNonZeroExit(t *testing.T) {
 		Args:    []string{"-c", "exit 42"},
 	}
 
-	result, err := Execute(context.Background(), cfg, parsed, 10)
+	result, err := Execute(context.Background(), cfg, parsed, 10, 1000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestExecuteTimeout(t *testing.T) {
 		Args:    []string{"-c", "sleep 10"},
 	}
 
-	result, err := Execute(context.Background(), cfg, parsed, 1)
+	result, err := Execute(context.Background(), cfg, parsed, 1, 1000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestExecuteTruncation(t *testing.T) {
 		Args:    []string{"-c", "seq 1 10"},
 	}
 
-	result, err := Execute(context.Background(), cfg, parsed, 10)
+	result, err := Execute(context.Background(), cfg, parsed, 10, 3)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

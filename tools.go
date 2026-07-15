@@ -75,6 +75,10 @@ Allowed commands for this session: ` + strings.Join(allowed, ", ")
 					"type":        "number",
 					"description": "Timeout in seconds. 0 for unlimited. Omit to use the configured default.",
 				},
+				"max_lines": map[string]any{
+					"type":        "integer",
+					"description": "Maximum output lines to return. 0 for unlimited. Omit to use the configured default.",
+				},
 			},
 			"required": []string{"command"},
 		},
@@ -129,10 +133,11 @@ The path must be a specific directory (not "/" or system roots like /proc, /sys,
 }
 
 type runArgs struct {
-	Command string            `json:"command"`
-	Env     map[string]string `json:"env,omitempty"`
-	Filters []filterArg       `json:"filters,omitempty"`
-	Timeout *int              `json:"timeout,omitempty"`
+	Command  string            `json:"command"`
+	Env      map[string]string `json:"env,omitempty"`
+	Filters  []filterArg       `json:"filters,omitempty"`
+	Timeout  *int              `json:"timeout,omitempty"`
+	MaxLines *int              `json:"max_lines,omitempty"`
 }
 
 type filterArg struct {
@@ -189,8 +194,14 @@ func (s *Server) handleRun(ctx context.Context, params json.RawMessage) *ToolRes
 		timeoutSec = *args.Timeout
 	}
 
+	// Determine max output lines.
+	maxLines := s.config.MaxOutputFor(basename)
+	if args.MaxLines != nil {
+		maxLines = *args.MaxLines
+	}
+
 	// Execute.
-	result, err := Execute(ctx, s.config, parsed, timeoutSec)
+	result, err := Execute(ctx, s.config, parsed, timeoutSec, maxLines)
 	if err != nil {
 		return errorResult(err.Error())
 	}

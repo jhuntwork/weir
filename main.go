@@ -13,7 +13,7 @@ func main() {
 	cfg, err := loadFromArgs()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[weir] %v\n", err)
-		fmt.Fprintf(os.Stderr, "usage: weir --run-allow cmd1,cmd2,cmd3 [--timeout 60] [--find-deny /path1,/path2]\n")
+		fmt.Fprintf(os.Stderr, "usage: weir --run-allow cmd1,cmd2,cmd3 [--timeout 60] [--max-lines 1000] [--find-deny /path1,/path2]\n")
 		os.Exit(1)
 	}
 
@@ -32,6 +32,7 @@ func loadFromArgs() (*Config, error) {
 	var allowList string
 	var findDenyPaths string
 	timeout := 60
+	maxLines := 1000
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -60,6 +61,19 @@ func loadFromArgs() (*Config, error) {
 				n = n*10 + int(c-'0')
 			}
 			timeout = n
+		case "--max-lines":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("--max-lines requires a value")
+			}
+			i++
+			n := 0
+			for _, c := range args[i] {
+				if c < '0' || c > '9' {
+					return nil, fmt.Errorf("--max-lines must be a number")
+				}
+				n = n*10 + int(c-'0')
+			}
+			maxLines = n
 		default:
 			return nil, fmt.Errorf("unknown argument: %s", args[i])
 		}
@@ -72,7 +86,7 @@ func loadFromArgs() (*Config, error) {
 	cfg := &Config{
 		Commands: make(map[string]CommandConfig),
 		Defaults: DefaultConfig{
-			MaxOutputLines: 1000,
+			MaxOutputLines: maxLines,
 			Timeout:        timeout,
 		},
 	}

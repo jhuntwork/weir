@@ -20,7 +20,7 @@ func TestPipeIsLiteralArg(t *testing.T) {
 		Args:    []string{"hello", "|", "cat"},
 	}
 
-	result, err := Execute(context.Background(), cfg, parsed, 10)
+	result, err := Execute(context.Background(), cfg, parsed, 10, 1000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestSemicolonIsLiteralArg(t *testing.T) {
 		Args:    []string{"hello", ";", "echo", "world"},
 	}
 
-	result, err := Execute(context.Background(), cfg, parsed, 10)
+	result, err := Execute(context.Background(), cfg, parsed, 10, 1000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestDoubleAmpersandIsLiteralArg(t *testing.T) {
 		Args:    []string{"hello", "&&", "echo", "world"},
 	}
 
-	result, err := Execute(context.Background(), cfg, parsed, 10)
+	result, err := Execute(context.Background(), cfg, parsed, 10, 1000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestBacktickIsLiteralArg(t *testing.T) {
 		Args:    []string{"`whoami`"},
 	}
 
-	result, err := Execute(context.Background(), cfg, parsed, 10)
+	result, err := Execute(context.Background(), cfg, parsed, 10, 1000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestDollarParenIsLiteralArg(t *testing.T) {
 		Args:    []string{"$(whoami)"},
 	}
 
-	result, err := Execute(context.Background(), cfg, parsed, 10)
+	result, err := Execute(context.Background(), cfg, parsed, 10, 1000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
