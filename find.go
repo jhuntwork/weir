@@ -163,7 +163,7 @@ func RunFind(params *FindParams) ([]FindResult, error) {
 
 // ValidateFindPath checks that the path is safe to search.
 // Hardcoded rejects: "/" and virtual/pseudo filesystems that are dangerous to walk.
-// Additional paths can be denied via the extraDeny list (from --find-deny-paths).
+// Additional paths can be denied via the extraDeny list (from --find-deny).
 func ValidateFindPath(path string, extraDeny []string) error {
 	cleaned := filepath.Clean(path)
 	if cleaned == "/" {
