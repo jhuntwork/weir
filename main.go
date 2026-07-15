@@ -90,10 +90,25 @@ func loadFromArgs() (*Config, error) {
 			Timeout:        timeout,
 		},
 	}
-	for _, name := range strings.Split(allowList, ",") {
-		name = strings.TrimSpace(name)
-		if name != "" {
-			cfg.Commands[name] = CommandConfig{}
+	for _, entry := range strings.Split(allowList, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		// Support "cmd:sub1;sub2;sub3" syntax for subcommand filtering.
+		if colonIdx := strings.IndexByte(entry, ':'); colonIdx > 0 {
+			name := entry[:colonIdx]
+			subs := strings.Split(entry[colonIdx+1:], ";")
+			var subcommands []string
+			for _, s := range subs {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					subcommands = append(subcommands, s)
+				}
+			}
+			cfg.Commands[name] = CommandConfig{Subcommands: subcommands}
+		} else {
+			cfg.Commands[entry] = CommandConfig{}
 		}
 	}
 	if findDenyPaths != "" {

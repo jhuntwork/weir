@@ -16,6 +16,22 @@ weir --run-allow cmd1,cmd2,... [--find-deny /path1,/path2,...] [--timeout 60] [-
 **--run-allow** (required): comma-separated list of command basenames to whitelist.
 Commands not in this list are rejected.
 
+Entries can optionally define allowed subcommands using colon-separated
+syntax:
+
+```
+weir --run-allow "swamp,rg,deno:test;fmt;lint;check,git:status;log;diff;checkout;commit;push;fetch;remote"
+```
+
+- `swamp` — all subcommands allowed (no restriction)
+- `deno:test;fmt;lint;check` — only `deno test`, `deno fmt`, `deno lint`,
+  and `deno check` are allowed; `deno eval`, `deno run`, etc. are rejected
+- `git:status;log;diff;...` — only the listed git subcommands are allowed
+
+When subcommands are specified, the first argument to the command is checked
+against the list. If it doesn't match, the request is denied with an error
+naming the allowed subcommands.
+
 **--find-deny**: additional paths to block from `find` searches. Appends to
 the hardcoded deny list (`/`, `/proc`, `/sys`, `/dev`).
 

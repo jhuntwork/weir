@@ -19,6 +19,7 @@ type CommandConfig struct {
 	Env            map[string]string
 	MaxOutputLines int
 	DefaultTimeout int
+	Subcommands    []string // if non-empty, only these first-arg subcommands are allowed
 }
 
 // DefaultConfig holds global defaults.
@@ -31,6 +32,29 @@ type DefaultConfig struct {
 func (c *Config) IsAllowed(basename string) bool {
 	_, ok := c.Commands[basename]
 	return ok
+}
+
+// IsSubcommandAllowed checks whether the first argument (subcommand) is
+// permitted for the given command. Returns true if no subcommand restriction
+// is configured, or if the subcommand matches the allowlist.
+func (c *Config) IsSubcommandAllowed(basename string, args []string) bool {
+	cmd, ok := c.Commands[basename]
+	if !ok {
+		return false
+	}
+	if len(cmd.Subcommands) == 0 {
+		return true // no restriction
+	}
+	if len(args) == 0 {
+		return false // subcommands required but none given
+	}
+	sub := args[0]
+	for _, allowed := range cmd.Subcommands {
+		if allowed == sub {
+			return true
+		}
+	}
+	return false
 }
 
 // Resolve returns the full path for a command.

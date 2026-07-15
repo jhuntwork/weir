@@ -31,6 +31,13 @@ func Execute(ctx context.Context, cfg *Config, p *Parsed, timeoutSec int, maxLin
 		return nil, fmt.Errorf("command %q is not in the whitelist", basename)
 	}
 
+	// Validate subcommand if restricted.
+	if !cfg.IsSubcommandAllowed(basename, p.Args) {
+		allowed := cfg.Commands[basename].Subcommands
+		return nil, fmt.Errorf("subcommand %q is not allowed for %q (allowed: %s)",
+			firstArg(p.Args), basename, strings.Join(allowed, ", "))
+	}
+
 	// Resolve binary path.
 	binPath, err := cfg.Resolve(basename)
 	if err != nil {
@@ -189,4 +196,11 @@ func (m *maxLinesReader) Read(p []byte) (int, error) {
 	m.buf.WriteString(m.scanner.Text())
 	m.buf.WriteByte('\n')
 	return m.buf.Read(p)
+}
+
+func firstArg(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	return args[0]
 }
