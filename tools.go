@@ -26,6 +26,9 @@ left-to-right on stdout, like a pipeline:
   jq     — parse output as JSON and apply a jq expression
   head   — keep the first n lines
   tail   — keep the last n lines
+  sort   — sort lines (expr: "" for lexicographic, "reverse", "numeric", or "numeric,reverse")
+  uniq   — deduplicate adjacent lines (expr: "" for plain, "count" for counts)
+  wc     — count lines/words/chars (expr: "lines" (default), "words", or "chars")
 
 Filters can be combined: jq to extract, then grep to narrow, then head to limit.
 
@@ -60,7 +63,7 @@ Allowed commands for this session: ` + strings.Join(allowed, ", ")
 						"properties": map[string]any{
 							"type": map[string]any{
 								"type":        "string",
-								"enum":        []string{"grep", "grep_v", "jq", "head", "tail"},
+								"enum":        []string{"grep", "grep_v", "jq", "head", "tail", "sort", "uniq", "wc"},
 								"description": "Filter type.",
 							},
 							"expr": map[string]any{
@@ -312,8 +315,14 @@ func parseFilterType(s string) (FilterType, error) {
 		return FilterHead, nil
 	case "tail":
 		return FilterTail, nil
+	case "sort":
+		return FilterSort, nil
+	case "uniq":
+		return FilterUniq, nil
+	case "wc":
+		return FilterWC, nil
 	default:
-		return 0, fmt.Errorf("unknown filter type %q (allowed: grep, grep_v, jq, head, tail)", s)
+		return 0, fmt.Errorf("unknown filter type %q (allowed: grep, grep_v, jq, head, tail, sort, uniq, wc)", s)
 	}
 }
 

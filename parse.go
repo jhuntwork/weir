@@ -22,6 +22,9 @@ const (
 	FilterJQ
 	FilterHead
 	FilterTail
+	FilterSort
+	FilterUniq
+	FilterWC
 )
 
 // Filter is a single filter stage in the pipeline.

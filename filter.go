@@ -47,6 +47,12 @@ func buildStage(input io.Reader, f Filter) (io.Reader, error) {
 		return newHeadReader(input, f.Arg)
 	case FilterTail:
 		return newTailReader(input, f.Arg)
+	case FilterSort:
+		return newSortReader(input, f.Arg)
+	case FilterUniq:
+		return newUniqReader(input, f.Arg)
+	case FilterWC:
+		return newWCReader(input, f.Arg)
 	default:
 		return nil, fmt.Errorf("unknown filter type")
 	}
@@ -202,6 +208,176 @@ func newTailReader(input io.Reader, countStr string) (io.Reader, error) {
 	return strings.NewReader(strings.Join(result, "\n")), nil
 }
 
+// --- Sort: buffer all input, sort lines, emit ---
+
+func newSortReader(input io.Reader, opts string) (io.Reader, error) {
+	scanner := bufio.NewScanner(input)
+	var lines []string
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading input for sort: %w", err)
+	}
+
+	reverse := false
+	numeric := false
+	for _, opt := range strings.Split(opts, ",") {
+		switch strings.TrimSpace(opt) {
+		case "-r", "r", "reverse":
+			reverse = true
+		case "-n", "n", "numeric":
+			numeric = true
+		case "":
+			// no option
+		default:
+			return nil, fmt.Errorf("unknown sort option %q (allowed: reverse, numeric, or empty for lexicographic)", opt)
+		}
+	}
+
+	if numeric {
+		sortNumeric(lines, reverse)
+	} else {
+		sortLexicographic(lines, reverse)
+	}
+
+	return strings.NewReader(strings.Join(lines, "\n")), nil
+}
+
+func sortLexicographic(lines []string, reverse bool) {
+	sortSliceStable(lines, func(i, j int) bool {
+		if reverse {
+			return lines[i] > lines[j]
+		}
+		return lines[i] < lines[j]
+	})
+}
+
+func sortNumeric(lines []string, reverse bool) {
+	sortSliceStable(lines, func(i, j int) bool {
+		ni := parseLeadingNumber(lines[i])
+		nj := parseLeadingNumber(lines[j])
+		if reverse {
+			return ni > nj
+		}
+		return ni < nj
+	})
+}
+
+func parseLeadingNumber(s string) float64 {
+	s = strings.TrimSpace(s)
+	var numStr strings.Builder
+	for _, r := range s {
+		if (r >= '0' && r <= '9') || r == '.' || r == '-' || r == '+' {
+			numStr.WriteRune(r)
+		} else {
+			break
+		}
+	}
+	n, err := strconv.ParseFloat(numStr.String(), 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// sortSliceStable is a simple insertion sort — good enough for the
+// typical <10k lines seen in command output. Avoids importing sort
+// package for a single use in this file.
+func sortSliceStable(s []string, less func(i, j int) bool) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && less(j, j-1); j-- {
+			s[j], s[j-1] = s[j-1], s[j]
+		}
+	}
+}
+
+// --- Uniq: deduplicate adjacent identical lines ---
+
+func newUniqReader(input io.Reader, opts string) (io.Reader, error) {
+	count := false
+	for _, opt := range strings.Split(opts, ",") {
+		switch strings.TrimSpace(opt) {
+		case "-c", "c", "count":
+			count = true
+		case "":
+			// no option
+		default:
+			return nil, fmt.Errorf("unknown uniq option %q (allowed: count, or empty for plain dedup)", opt)
+		}
+	}
+
+	scanner := bufio.NewScanner(input)
+	var result []string
+	var prev string
+	n := 0
+	first := true
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if first {
+			prev = line
+			n = 1
+			first = false
+			continue
+		}
+		if line == prev {
+			n++
+		} else {
+			if count {
+				result = append(result, fmt.Sprintf("%7d %s", n, prev))
+			} else {
+				result = append(result, prev)
+			}
+			prev = line
+			n = 1
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading input for uniq: %w", err)
+	}
+	// Flush last group.
+	if !first {
+		if count {
+			result = append(result, fmt.Sprintf("%7d %s", n, prev))
+		} else {
+			result = append(result, prev)
+		}
+	}
+
+	return strings.NewReader(strings.Join(result, "\n")), nil
+}
+
+// --- WC: count lines, words, or bytes ---
+
+func newWCReader(input io.Reader, mode string) (io.Reader, error) {
+	scanner := bufio.NewScanner(input)
+	lines := 0
+	words := 0
+	chars := 0
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		lines++
+		chars += len(line) + 1 // +1 for newline
+		words += len(strings.Fields(line))
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading input for wc: %w", err)
+	}
+
+	switch strings.TrimSpace(mode) {
+	case "-l", "l", "lines", "":
+		return strings.NewReader(strconv.Itoa(lines)), nil
+	case "-w", "w", "words":
+		return strings.NewReader(strconv.Itoa(words)), nil
+	case "-c", "c", "chars", "bytes":
+		return strings.NewReader(strconv.Itoa(chars)), nil
+	default:
+		return nil, fmt.Errorf("unknown wc mode %q (allowed: lines, words, chars)", mode)
+	}
+}
+
 func filterName(t FilterType) string {
 	switch t {
 	case FilterGrep:
@@ -214,6 +390,12 @@ func filterName(t FilterType) string {
 		return "head"
 	case FilterTail:
 		return "tail"
+	case FilterSort:
+		return "sort"
+	case FilterUniq:
+		return "uniq"
+	case FilterWC:
+		return "wc"
 	default:
 		return "unknown"
 	}

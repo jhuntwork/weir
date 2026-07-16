@@ -200,3 +200,138 @@ func readAll(r interface{}) (string, error) {
 	}
 	return strings.TrimRight(string(b), "\n"), nil
 }
+
+func TestSortFilter(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		opts  string
+		want  string
+	}{
+		{"lexicographic", "banana\napple\ncherry", "", "apple\nbanana\ncherry"},
+		{"reverse", "banana\napple\ncherry", "reverse", "cherry\nbanana\napple"},
+		{"numeric", "10\n2\n30\n1", "numeric", "1\n2\n10\n30"},
+		{"numeric reverse", "10\n2\n30\n1", "numeric,reverse", "30\n10\n2\n1"},
+		{"empty input", "", "", ""},
+		{"single line", "hello", "", "hello"},
+		{"duplicates preserved", "b\na\nb\na", "", "a\na\nb\nb"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, err := newSortReader(strings.NewReader(tt.input), tt.opts)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			got, err := readAll(r)
+			if err != nil {
+				t.Fatalf("read error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSortFilterInvalidOption(t *testing.T) {
+	_, err := newSortReader(strings.NewReader("a\nb"), "bogus")
+	if err == nil {
+		t.Fatal("expected error for unknown sort option")
+	}
+}
+
+func TestUniqFilter(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		opts  string
+		want  string
+	}{
+		{"plain dedup", "a\na\nb\nb\nb\nc", "", "a\nb\nc"},
+		{"count", "a\na\nb\nb\nb\nc", "count", "      2 a\n      3 b\n      1 c"},
+		{"no duplicates", "a\nb\nc", "", "a\nb\nc"},
+		{"all same", "x\nx\nx", "", "x"},
+		{"all same count", "x\nx\nx", "count", "      3 x"},
+		{"empty input", "", "", ""},
+		{"single line", "hello", "", "hello"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, err := newUniqReader(strings.NewReader(tt.input), tt.opts)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			got, err := readAll(r)
+			if err != nil {
+				t.Fatalf("read error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUniqFilterInvalidOption(t *testing.T) {
+	_, err := newUniqReader(strings.NewReader("a\nb"), "bogus")
+	if err == nil {
+		t.Fatal("expected error for unknown uniq option")
+	}
+}
+
+func TestWCFilter(t *testing.T) {
+	input := "hello world\nfoo bar baz\nend"
+	tests := []struct {
+		name string
+		mode string
+		want string
+	}{
+		{"lines default", "", "3"},
+		{"lines explicit", "lines", "3"},
+		{"words", "words", "6"},
+		{"chars", "chars", "28"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, err := newWCReader(strings.NewReader(input), tt.mode)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			got, err := readAll(r)
+			if err != nil {
+				t.Fatalf("read error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWCFilterInvalidMode(t *testing.T) {
+	_, err := newWCReader(strings.NewReader("hello"), "bogus")
+	if err == nil {
+		t.Fatal("expected error for unknown wc mode")
+	}
+}
+
+func TestSortUniqChain(t *testing.T) {
+	input := "banana\napple\nbanana\ncherry\napple\napple"
+
+	// sort | uniq -c  (the classic pattern)
+	filters := []Filter{
+		{Type: FilterSort, Arg: ""},
+		{Type: FilterUniq, Arg: "count"},
+	}
+	got, err := ApplyFilterStream(strings.NewReader(input), filters)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "      3 apple\n      2 banana\n      1 cherry"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

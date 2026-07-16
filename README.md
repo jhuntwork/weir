@@ -52,17 +52,26 @@ default).
 
 Output can be post-processed through a chain of filters applied left-to-right:
 
-| Filter   | Implementation | Description                        |
-|----------|----------------|------------------------------------|
-| `grep`   | built-in       | keep lines matching a regex        |
-| `grep_v` | built-in       | exclude lines matching a regex     |
-| `head`   | built-in       | keep the first N lines             |
-| `tail`   | built-in       | keep the last N lines              |
-| `jq`     | system `jq`    | apply a jq expression to JSON      |
+| Filter   | Implementation | Description                                  |
+|----------|----------------|----------------------------------------------|
+| `grep`   | built-in       | keep lines matching a regex                  |
+| `grep_v` | built-in       | exclude lines matching a regex               |
+| `head`   | built-in       | keep the first N lines                       |
+| `tail`   | built-in       | keep the last N lines                        |
+| `sort`   | built-in       | sort lines (lexicographic, numeric, reverse) |
+| `uniq`   | built-in       | deduplicate adjacent lines, optional counts  |
+| `wc`     | built-in       | count lines, words, or chars                 |
+| `jq`     | system `jq`    | apply a jq expression to JSON                |
 
-`grep`, `grep_v`, `head`, and `tail` are implemented internally with no
-external dependencies. `jq` shells out to the system's `jq` binary (must
-be in PATH).
+`grep`, `grep_v`, `head`, `tail`, `sort`, `uniq`, and `wc` are implemented
+internally with no external dependencies. `jq` shells out to the system's
+`jq` binary (must be in PATH).
+
+**Filter expressions:**
+
+- `sort`: empty for lexicographic, `"reverse"`, `"numeric"`, or `"numeric,reverse"`
+- `uniq`: empty for plain dedup, `"count"` to prefix each line with its run count
+- `wc`: `"lines"` (default), `"words"`, or `"chars"`
 
 ### find
 
