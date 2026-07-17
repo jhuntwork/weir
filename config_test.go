@@ -97,3 +97,81 @@ func TestResolve(t *testing.T) {
 		t.Fatal("resolve rm: expected error")
 	}
 }
+
+func TestIsSubcommandAllowed(t *testing.T) {
+	cfg := &Config{
+		Commands: map[string]CommandConfig{
+			"git":   {Subcommands: []string{"diff", "log", "status"}},
+			"swamp": {}, // no subcommand restriction
+		},
+	}
+
+	// Allowed subcommands pass.
+	if !cfg.IsSubcommandAllowed("git", []string{"status"}) {
+		t.Fatal("expected 'git status' to be allowed")
+	}
+	if !cfg.IsSubcommandAllowed("git", []string{"log", "--oneline"}) {
+		t.Fatal("expected 'git log --oneline' to be allowed")
+	}
+	if !cfg.IsSubcommandAllowed("git", []string{"diff", "HEAD~1"}) {
+		t.Fatal("expected 'git diff HEAD~1' to be allowed")
+	}
+
+	// Disallowed subcommand fails.
+	if cfg.IsSubcommandAllowed("git", []string{"push"}) {
+		t.Fatal("expected 'git push' to be denied")
+	}
+
+	// No args fails when subcommands are restricted.
+	if cfg.IsSubcommandAllowed("git", []string{}) {
+		t.Fatal("expected bare 'git' with no subcommand to be denied")
+	}
+
+	// No restriction means anything passes.
+	if !cfg.IsSubcommandAllowed("swamp", []string{"model", "list"}) {
+		t.Fatal("expected unrestricted command to allow any subcommand")
+	}
+
+	// Leading flags are skipped to find the subcommand.
+	if !cfg.IsSubcommandAllowed("git", []string{"--git-dir=/tmp/repo/.git", "status"}) {
+		t.Fatal("expected 'git --git-dir=... status' to be allowed")
+	}
+	if !cfg.IsSubcommandAllowed("git", []string{"--no-pager", "log"}) {
+		t.Fatal("expected 'git --no-pager log' to be allowed")
+	}
+	if !cfg.IsSubcommandAllowed("git", []string{"--work-tree=/tmp/repo", "--git-dir=/tmp/repo/.git", "diff"}) {
+		t.Fatal("expected 'git --work-tree=... --git-dir=... diff' to be allowed")
+	}
+
+	// Leading flags with a disallowed subcommand still fails.
+	if cfg.IsSubcommandAllowed("git", []string{"--no-pager", "push"}) {
+		t.Fatal("expected 'git --no-pager push' to be denied")
+	}
+
+	// Only flags, no subcommand — fails.
+	if cfg.IsSubcommandAllowed("git", []string{"--version"}) {
+		t.Fatal("expected 'git --version' with no subcommand to be denied")
+	}
+}
+
+func TestFindSubcommand(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"simple", []string{"status"}, "status"},
+		{"flag then sub", []string{"--git-dir=/path", "log"}, "log"},
+		{"multiple flags", []string{"--no-pager", "-c", "diff"}, "diff"},
+		{"no subcommand", []string{"--version"}, ""},
+		{"empty", []string{}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := findSubcommand(tc.args)
+			if got != tc.want {
+				t.Fatalf("findSubcommand(%v) = %q, want %q", tc.args, got, tc.want)
+			}
+		})
+	}
+}

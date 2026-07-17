@@ -34,9 +34,10 @@ func (c *Config) IsAllowed(basename string) bool {
 	return ok
 }
 
-// IsSubcommandAllowed checks whether the first argument (subcommand) is
-// permitted for the given command. Returns true if no subcommand restriction
-// is configured, or if the subcommand matches the allowlist.
+// IsSubcommandAllowed checks whether the first non-flag argument (subcommand)
+// is permitted for the given command. Returns true if no subcommand restriction
+// is configured, or if the subcommand matches the allowlist. Leading flags
+// (args starting with "-") are skipped to find the actual subcommand.
 func (c *Config) IsSubcommandAllowed(basename string, args []string) bool {
 	cmd, ok := c.Commands[basename]
 	if !ok {
@@ -45,16 +46,28 @@ func (c *Config) IsSubcommandAllowed(basename string, args []string) bool {
 	if len(cmd.Subcommands) == 0 {
 		return true // no restriction
 	}
-	if len(args) == 0 {
-		return false // subcommands required but none given
+	sub := findSubcommand(args)
+	if sub == "" {
+		return false // subcommands required but none found
 	}
-	sub := args[0]
 	for _, allowed := range cmd.Subcommands {
 		if allowed == sub {
 			return true
 		}
 	}
 	return false
+}
+
+// findSubcommand returns the first argument that doesn't look like a flag.
+// This allows global flags (e.g. --git-dir=..., --no-pager) to precede the
+// subcommand without being misidentified as one.
+func findSubcommand(args []string) string {
+	for _, a := range args {
+		if len(a) > 0 && a[0] != '-' {
+			return a
+		}
+	}
+	return ""
 }
 
 // Resolve returns the full path for a command.

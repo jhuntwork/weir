@@ -202,5 +202,12 @@ func firstArg(args []string) string {
 	if len(args) == 0 {
 		return ""
 	}
+	// Skip flags to find the subcommand, matching IsSubcommandAllowed logic.
+	for _, a := range args {
+		if len(a) > 0 && a[0] != '-' {
+			return a
+		}
+	}
+	// All args are flags — return the first one for the error message.
 	return args[0]
 }

@@ -191,8 +191,9 @@ func (s *Server) handleRun(ctx context.Context, params json.RawMessage) *ToolRes
 			Allowed: false,
 		})
 		allowed := s.config.Commands[basename].Subcommands
-		return errorResult(fmt.Sprintf("subcommand %q is not allowed for %q (allowed: %s)",
-			firstArg(parts[1:]), basename, strings.Join(allowed, ", ")))
+		return errorResult(fmt.Sprintf("subcommand %q is not allowed for %q (allowed: %s). "+
+			"If you need more, try: swamp extension search %s",
+			firstArg(parts[1:]), basename, strings.Join(allowed, ", "), basename))
 	}
 
 	// Convert filter args to internal Filter type.
