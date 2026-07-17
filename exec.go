@@ -24,7 +24,7 @@ type RunResult struct {
 
 // Execute runs a parsed command through the whitelist, streams output
 // through filters, and returns a structured result.
-func Execute(ctx context.Context, cfg *Config, p *Parsed, timeoutSec int, maxLines int) (*RunResult, error) {
+func Execute(ctx context.Context, cfg *Config, p *Parsed, timeoutSec int, maxLines int, cwd string) (*RunResult, error) {
 	// Validate against whitelist.
 	basename := filepath.Base(p.Command)
 	if !cfg.IsAllowed(basename) {
@@ -53,6 +53,9 @@ func Execute(ctx context.Context, cfg *Config, p *Parsed, timeoutSec int, maxLin
 
 	// Build command.
 	cmd := exec.CommandContext(ctx, binPath, p.Args...)
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
 
 	// Environment: inherit current env, add config env, add request env.
 	env := os.Environ()
@@ -86,13 +89,11 @@ func Execute(ctx context.Context, cfg *Config, p *Parsed, timeoutSec int, maxLin
 			return nil, fmt.Errorf("start: %w", err)
 		}
 
-		// Build the reader pipeline: stdout → truncation → filters.
+		// Build the reader pipeline: stdout → filters.
+		// When filters are present, skip max-lines truncation — the filters
+		// themselves are the narrowing mechanism. Pre-truncation breaks
+		// structured filters like jq that need complete input.
 		var reader io.Reader = stdoutPipe
-
-		// Apply max-lines truncation as the first stage if configured.
-		if maxLines > 0 {
-			reader = newMaxLinesReader(reader, maxLines, &truncated)
-		}
 
 		// Apply filter chain.
 		output, err = ApplyFilterStream(reader, p.Filters)

@@ -26,7 +26,7 @@ func TestExecuteAllowed(t *testing.T) {
 		Args:    []string{"hello", "world"},
 	}
 
-	result, err := Execute(context.Background(), cfg, parsed, 10, 1000)
+	result, err := Execute(context.Background(), cfg, parsed, 10, 1000, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestExecuteBlocked(t *testing.T) {
 		Args:    []string{"-rf", "/"},
 	}
 
-	_, err := Execute(context.Background(), cfg, parsed, 10, 1000)
+	_, err := Execute(context.Background(), cfg, parsed, 10, 1000, "")
 	if err == nil {
 		t.Fatal("expected error for blocked command")
 	}
@@ -62,7 +62,7 @@ func TestExecuteWithEnv(t *testing.T) {
 		Env:     map[string]string{"TEST_VAR": "weir_test"},
 	}
 
-	result, err := Execute(context.Background(), cfg, parsed, 10, 1000)
+	result, err := Execute(context.Background(), cfg, parsed, 10, 1000, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestExecuteWithFilters(t *testing.T) {
 		},
 	}
 
-	result, err := Execute(context.Background(), cfg, parsed, 10, 1000)
+	result, err := Execute(context.Background(), cfg, parsed, 10, 1000, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestExecuteNonZeroExit(t *testing.T) {
 		Args:    []string{"-c", "exit 42"},
 	}
 
-	result, err := Execute(context.Background(), cfg, parsed, 10, 1000)
+	result, err := Execute(context.Background(), cfg, parsed, 10, 1000, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestExecuteTimeout(t *testing.T) {
 		Args:    []string{"-c", "sleep 10"},
 	}
 
-	result, err := Execute(context.Background(), cfg, parsed, 1, 1000)
+	result, err := Execute(context.Background(), cfg, parsed, 1, 1000, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestExecuteTruncation(t *testing.T) {
 		Args:    []string{"-c", "seq 1 10"},
 	}
 
-	result, err := Execute(context.Background(), cfg, parsed, 10, 3)
+	result, err := Execute(context.Background(), cfg, parsed, 10, 3, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -154,5 +154,35 @@ func TestExecuteTruncation(t *testing.T) {
 	lines := strings.Split(strings.TrimRight(result.Stdout, "\n"), "\n")
 	if len(lines) != 3 {
 		t.Fatalf("expected 3 lines after truncation, got %d: %v", len(lines), lines)
+	}
+}
+
+func TestExecuteFilteredNotPreTruncated(t *testing.T) {
+	cfg := testConfig()
+	// maxLines=3 should NOT truncate before the filter sees the data.
+	// The grep filter selects line "8" from a 10-line input — which is
+	// beyond the 3-line limit. If pre-truncation were active, this would
+	// return empty.
+	parsed := &Parsed{
+		Command: "sh",
+		Args:    []string{"-c", "seq 1 10"},
+		Filters: []Filter{
+			{Type: FilterGrep, Arg: "^8$"},
+		},
+	}
+
+	result, err := Execute(context.Background(), cfg, parsed, 10, 3, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Filtered {
+		t.Fatal("expected Filtered=true")
+	}
+	if result.Truncated {
+		t.Fatal("expected Truncated=false — filters bypass pre-truncation")
+	}
+	want := "8"
+	if strings.TrimSpace(result.Stdout) != want {
+		t.Fatalf("got %q, want %q — filter should see full output regardless of maxLines", result.Stdout, want)
 	}
 }

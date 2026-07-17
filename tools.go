@@ -55,6 +55,10 @@ Allowed commands for this session: ` + strings.Join(allowed, ", ")
 					"type":        "string",
 					"description": "The command to run with its arguments. Example: 'swamp data get tracker all --json'",
 				},
+				"cwd": map[string]any{
+					"type":        "string",
+					"description": "Working directory for the command. Defaults to $HOME if not specified.",
+				},
 				"env": map[string]any{
 					"type":        "object",
 					"description": "Optional environment variables to set for the command.",
@@ -142,6 +146,7 @@ The path must be a specific directory (not "/" or system roots like /proc, /sys,
 
 type runArgs struct {
 	Command  string            `json:"command"`
+	Cwd      string            `json:"cwd,omitempty"`
 	Env      map[string]string `json:"env,omitempty"`
 	Filters  []filterArg       `json:"filters,omitempty"`
 	Timeout  *int              `json:"timeout,omitempty"`
@@ -231,7 +236,7 @@ func (s *Server) handleRun(ctx context.Context, params json.RawMessage) *ToolRes
 
 	// Execute with timing.
 	start := time.Now()
-	result, err := Execute(ctx, s.config, parsed, timeoutSec, maxLines)
+	result, err := Execute(ctx, s.config, parsed, timeoutSec, maxLines, args.Cwd)
 	durationMs := time.Since(start).Milliseconds()
 
 	if err != nil {
