@@ -180,7 +180,10 @@ func (s *Server) handleRun(ctx context.Context, params json.RawMessage) *ToolRes
 			Command: args.Command,
 			Allowed: false,
 		})
-		return errorResult(fmt.Sprintf("command %q is not in the whitelist", basename))
+		return errorResult(fmt.Sprintf(
+			"command %q is not in the whitelist. "+
+				"If you need this capability, try: swamp extension search %s",
+			basename, basename))
 	}
 
 	// Validate subcommand if restricted.
