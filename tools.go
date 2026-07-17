@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 func (s *Server) registerTools() {
@@ -37,6 +38,10 @@ expected, or you find yourself working around a limitation of this tool, tell
 the user. This tool is under active development and feedback about missing
 commands, unhelpful error messages, or filter behaviors that don't match
 expectations is valuable.
+
+If the work requires a command that isn't whitelisted, the answer is usually
+a swamp extension — not expanding the whitelist. Recurring capability belongs
+in structured, validated tooling rather than raw shell access.
 
 Allowed commands for this session: ` + strings.Join(allowed, ", ")
 
@@ -170,7 +175,24 @@ func (s *Server) handleRun(ctx context.Context, params json.RawMessage) *ToolRes
 
 	// Validate against whitelist.
 	if !s.config.IsAllowed(basename) {
+		s.metrics.Record(MetricsEvent{
+			Tool:    "run",
+			Command: args.Command,
+			Allowed: false,
+		})
 		return errorResult(fmt.Sprintf("command %q is not in the whitelist", basename))
+	}
+
+	// Validate subcommand if restricted.
+	if !s.config.IsSubcommandAllowed(basename, parts[1:]) {
+		s.metrics.Record(MetricsEvent{
+			Tool:    "run",
+			Command: args.Command,
+			Allowed: false,
+		})
+		allowed := s.config.Commands[basename].Subcommands
+		return errorResult(fmt.Sprintf("subcommand %q is not allowed for %q (allowed: %s)",
+			firstArg(parts[1:]), basename, strings.Join(allowed, ", ")))
 	}
 
 	// Convert filter args to internal Filter type.
@@ -203,11 +225,37 @@ func (s *Server) handleRun(ctx context.Context, params json.RawMessage) *ToolRes
 		maxLines = *args.MaxLines
 	}
 
-	// Execute.
+	// Execute with timing.
+	start := time.Now()
 	result, err := Execute(ctx, s.config, parsed, timeoutSec, maxLines)
+	durationMs := time.Since(start).Milliseconds()
+
 	if err != nil {
+		s.metrics.Record(MetricsEvent{
+			Tool:       "run",
+			Command:    args.Command,
+			Allowed:    true,
+			Filters:    args.Filters,
+			DurationMs: durationMs,
+		})
 		return errorResult(err.Error())
 	}
+
+	// Count output lines for metrics.
+	outputLines := countLines(result.Stdout)
+	exitCode := result.ExitCode
+
+	s.metrics.Record(MetricsEvent{
+		Tool:            "run",
+		Command:         args.Command,
+		Allowed:         true,
+		Filters:         args.Filters,
+		ExitCode:        &exitCode,
+		DurationMs:      durationMs,
+		OutputLinesPre:  outputLines,
+		OutputLinesPost: outputLines, // same if no filters changed line count at this level
+		Truncated:       result.Truncated,
+	})
 
 	return textResult(formatResult(result))
 }
@@ -233,6 +281,11 @@ func (s *Server) handleFind(_ context.Context, params json.RawMessage) *ToolResu
 
 	// Validate path safety.
 	if err := ValidateFindPath(args.Path, s.config.FindDenyPaths); err != nil {
+		s.metrics.Record(MetricsEvent{
+			Tool:    "find",
+			Path:    args.Path,
+			Allowed: false,
+		})
 		return errorResult(err.Error())
 	}
 
@@ -277,11 +330,51 @@ func (s *Server) handleFind(_ context.Context, params json.RawMessage) *ToolResu
 		return errorResult(fmt.Sprintf("path %q is not a directory", args.Path))
 	}
 
-	// Run find.
+	// Run find with timing.
+	start := time.Now()
 	results, err := RunFind(fp)
+	durationMs := time.Since(start).Milliseconds()
+
 	if err != nil {
+		s.metrics.Record(MetricsEvent{
+			Tool:       "find",
+			Path:       args.Path,
+			Allowed:    true,
+			DurationMs: durationMs,
+		})
 		return errorResult(fmt.Sprintf("find error: %v", err))
 	}
+
+	// Record metrics.
+	resultCount := len(results)
+	findParams := map[string]any{}
+	if args.Name != "" {
+		findParams["name"] = args.Name
+	}
+	if args.Type != "" {
+		findParams["type"] = args.Type
+	}
+	if args.MaxDepth > 0 {
+		findParams["maxdepth"] = args.MaxDepth
+	}
+	if args.Mtime != "" {
+		findParams["mtime"] = args.Mtime
+	}
+	if args.Size != "" {
+		findParams["size"] = args.Size
+	}
+	if len(args.Exclude) > 0 {
+		findParams["exclude"] = args.Exclude
+	}
+
+	s.metrics.Record(MetricsEvent{
+		Tool:        "find",
+		Path:        args.Path,
+		FindParams:  findParams,
+		Allowed:     true,
+		DurationMs:  durationMs,
+		ResultCount: &resultCount,
+	})
 
 	// Format output — one path per line, with type/size info.
 	if len(results) == 0 {
@@ -358,3 +451,14 @@ func formatResult(r *RunResult) string {
 	return b.String()
 }
 
+
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := strings.Count(s, "\n")
+	if !strings.HasSuffix(s, "\n") {
+		n++
+	}
+	return n
+}

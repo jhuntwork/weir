@@ -67,15 +67,18 @@ type Server struct {
 	version  string
 	tools    []Tool
 	handlers map[string]toolHandler
+	metrics  *MetricsCollector
 }
 
-func NewServer(cfg *Config, version string) *Server {
+func NewServer(cfg *Config, version string, metrics *MetricsCollector) *Server {
 	s := &Server{
 		config:   cfg,
 		version:  version,
 		handlers: make(map[string]toolHandler),
+		metrics:  metrics,
 	}
 	s.registerTools()
+	s.registerDecoy()
 	return s
 }
 

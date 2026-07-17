@@ -92,6 +92,21 @@ Additional paths can be denied via `--find-deny`.
 go build -o weir .
 ```
 
+## Philosophy
+
+Weir's whitelist is intentionally small. If you find yourself wanting to add
+many commands, that's a signal the work should live in structured tooling
+instead — something with validation, state tracking, and versioned output
+rather than raw shell access.
+
+For us, that's [swamp](https://github.com/swamp-labs/swamp). Commands that
+agents need regularly become swamp extensions: typed, schema-validated, with
+checks that gate execution. Weir provides the escape hatch (`rg` for search,
+`swamp` for everything else); the extensions provide the real surface area.
+
+The constraint is the point. An ever-growing whitelist is a sign the
+architecture is missing a layer.
+
 ## Protocol
 
 JSON-RPC 2.0 over stdin/stdout, per the [MCP spec](https://modelcontextprotocol.io).
