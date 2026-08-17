@@ -25,6 +25,9 @@ type CommandConfig struct {
 // DefaultConfig holds global defaults.
 type DefaultConfig struct {
 	MaxOutputLines int
+	MaxOutputBytes int
+	MaxStreamBytes int
+	MaxFindResults int
 	Timeout        int
 }
 
@@ -34,10 +37,9 @@ func (c *Config) IsAllowed(basename string) bool {
 	return ok
 }
 
-// IsSubcommandAllowed checks whether the first non-flag argument (subcommand)
-// is permitted for the given command. Returns true if no subcommand restriction
-// is configured, or if the subcommand matches the allowlist. Leading flags
-// (args starting with "-") are skipped to find the actual subcommand.
+// IsSubcommandAllowed checks whether the first argument is an allowed
+// subcommand. Restricted commands intentionally use the canonical form
+// "command subcommand [args...]"; flags before the subcommand are rejected.
 func (c *Config) IsSubcommandAllowed(basename string, args []string) bool {
 	cmd, ok := c.Commands[basename]
 	if !ok {
@@ -48,7 +50,7 @@ func (c *Config) IsSubcommandAllowed(basename string, args []string) bool {
 	}
 	sub := findSubcommand(args)
 	if sub == "" {
-		return false // subcommands required but none found
+		return false // subcommands required and must be first
 	}
 	for _, allowed := range cmd.Subcommands {
 		if allowed == sub {
@@ -58,16 +60,13 @@ func (c *Config) IsSubcommandAllowed(basename string, args []string) bool {
 	return false
 }
 
-// findSubcommand returns the first argument that doesn't look like a flag.
-// This allows global flags (e.g. --git-dir=..., --no-pager) to precede the
-// subcommand without being misidentified as one.
+// findSubcommand returns the first argument only when it is a subcommand.
+// Flags before a restricted command's subcommand are intentionally unsupported.
 func findSubcommand(args []string) string {
-	for _, a := range args {
-		if len(a) > 0 && a[0] != '-' {
-			return a
-		}
+	if len(args) == 0 || (len(args[0]) > 0 && args[0][0] == '-') {
+		return ""
 	}
-	return ""
+	return args[0]
 }
 
 // Resolve returns the full path for a command.

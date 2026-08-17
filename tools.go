@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -60,8 +61,8 @@ Allowed commands for this session: ` + strings.Join(allowed, ", ")
 					"description": "Working directory for the command. Defaults to $HOME if not specified.",
 				},
 				"env": map[string]any{
-					"type":        "object",
-					"description": "Optional environment variables to set for the command.",
+					"type":                 "object",
+					"description":          "Optional environment variables to set for the command.",
 					"additionalProperties": map[string]any{"type": "string"},
 				},
 				"filters": map[string]any{
@@ -89,7 +90,11 @@ Allowed commands for this session: ` + strings.Join(allowed, ", ")
 				},
 				"max_lines": map[string]any{
 					"type":        "integer",
-					"description": "Maximum output lines to return. 0 for unlimited. Omit to use the configured default.",
+					"description": "Maximum output lines to return after filters. 0 for unlimited. Omit to use the configured default.",
+				},
+				"max_bytes": map[string]any{
+					"type":        "integer",
+					"description": "Maximum output bytes to return after filters. 0 for unlimited. Omit to use the configured default.",
 				},
 			},
 			"required": []string{"command"},
@@ -151,11 +156,75 @@ type runArgs struct {
 	Filters  []filterArg       `json:"filters,omitempty"`
 	Timeout  *int              `json:"timeout,omitempty"`
 	MaxLines *int              `json:"max_lines,omitempty"`
+	MaxBytes *int              `json:"max_bytes,omitempty"`
 }
 
 type filterArg struct {
 	Type string `json:"type"`
 	Expr string `json:"expr"`
+}
+
+func runMetricsEvent(args runArgs, basename string, parts []string) MetricsEvent {
+	event := MetricsEvent{
+		Tool:              "run",
+		Command:           args.Command,
+		Executable:        basename,
+		Arguments:         append([]string(nil), parts[1:]...),
+		Cwd:               args.Cwd,
+		Env:               args.Env,
+		RequestedTimeout:  args.Timeout,
+		RequestedMaxLines: args.MaxLines,
+		RequestedMaxBytes: args.MaxBytes,
+		Filters:           args.Filters,
+	}
+	if len(parts) > 1 && !strings.HasPrefix(parts[1], "-") {
+		event.Subcommand = parts[1]
+	}
+	return event
+}
+
+func runRejectionReason(cfg *Config, basename string, args []string) string {
+	if !cfg.IsAllowed(basename) {
+		return "command_not_allowed"
+	}
+	if len(cfg.Commands[basename].Subcommands) == 0 {
+		return ""
+	}
+	if len(args) == 0 {
+		return "missing_subcommand"
+	}
+	if strings.HasPrefix(args[0], "-") {
+		return "subcommand_must_be_first"
+	}
+	return "subcommand_not_allowed"
+}
+
+func deniedRunResult(cfg *Config, basename string, parts []string, reason string) *ToolResult {
+	intent := basename
+	if len(parts) > 1 && !strings.HasPrefix(parts[1], "-") {
+		intent += " " + parts[1]
+	}
+
+	var detail string
+	switch reason {
+	case "subcommand_must_be_first":
+		detail = "Restricted commands must use the canonical form `command subcommand [args...]`; flags before the subcommand are unsupported."
+	case "missing_subcommand":
+		detail = "This command requires an explicit allowed subcommand."
+	case "subcommand_not_allowed":
+		detail = fmt.Sprintf("Allowed direct subcommands for %q: %s.", basename, strings.Join(cfg.Commands[basename].Subcommands, ", "))
+	default:
+		detail = fmt.Sprintf("Command %q is not in Weir's direct allowlist.", basename)
+	}
+
+	return errorResult(fmt.Sprintf(
+		"The requested operation %q is not available through Weir's intentionally small direct surface. %s\n\n"+
+			"Search Swamp model extensions by service (not operation):\n  swamp extension search %s --content-type models --json\n\n"+
+			"Prefer @swamp/* candidates, but inspect each candidate's types and methods before pulling:\n  swamp extension info <package> --json\n\n"+
+			"Pull only a candidate that exposes the needed type and method. If none does, check installed types:\n  swamp model type search %s --json\n\n"+
+			"If no candidate or installed type covers the operation, extend the closest model type; create a new Swamp model extension only when no type fits.",
+		intent, detail, strconv.Quote(basename), strconv.Quote(basename),
+	))
 }
 
 func (s *Server) handleRun(ctx context.Context, params json.RawMessage) *ToolResult {
@@ -165,6 +234,16 @@ func (s *Server) handleRun(ctx context.Context, params json.RawMessage) *ToolRes
 	}
 	if args.Command == "" {
 		return errorResult("command is required")
+	}
+
+	if args.Timeout != nil && *args.Timeout < 0 {
+		return errorResult("timeout must be non-negative")
+	}
+	if args.MaxLines != nil && *args.MaxLines < 0 {
+		return errorResult("max_lines must be non-negative")
+	}
+	if args.MaxBytes != nil && *args.MaxBytes < 0 {
+		return errorResult("max_bytes must be non-negative")
 	}
 
 	// Parse command string into binary + args.
@@ -178,30 +257,13 @@ func (s *Server) handleRun(ctx context.Context, params json.RawMessage) *ToolRes
 
 	basename := filepath.Base(parts[0])
 
-	// Validate against whitelist.
-	if !s.config.IsAllowed(basename) {
-		s.metrics.Record(MetricsEvent{
-			Tool:    "run",
-			Command: args.Command,
-			Allowed: false,
-		})
-		return errorResult(fmt.Sprintf(
-			"command %q is not in the whitelist. "+
-				"If you need this capability, try: swamp extension search %s",
-			basename, basename))
-	}
-
-	// Validate subcommand if restricted.
-	if !s.config.IsSubcommandAllowed(basename, parts[1:]) {
-		s.metrics.Record(MetricsEvent{
-			Tool:    "run",
-			Command: args.Command,
-			Allowed: false,
-		})
-		allowed := s.config.Commands[basename].Subcommands
-		return errorResult(fmt.Sprintf("subcommand %q is not allowed for %q (allowed: %s). "+
-			"If you need more, try: swamp extension search %s",
-			firstArg(parts[1:]), basename, strings.Join(allowed, ", "), basename))
+	// Validate the intentionally small direct-command surface.
+	if !s.config.IsAllowed(basename) || !s.config.IsSubcommandAllowed(basename, parts[1:]) {
+		event := runMetricsEvent(args, basename, parts)
+		event.Allowed = false
+		event.RejectionReason = runRejectionReason(s.config, basename, parts[1:])
+		s.metrics.Record(event)
+		return deniedRunResult(s.config, basename, parts, event.RejectionReason)
 	}
 
 	// Convert filter args to internal Filter type.
@@ -209,6 +271,10 @@ func (s *Server) handleRun(ctx context.Context, params json.RawMessage) *ToolRes
 	for _, f := range args.Filters {
 		ft, err := parseFilterType(f.Type)
 		if err != nil {
+			event := runMetricsEvent(args, basename, parts)
+			event.Allowed = true
+			event.RejectionReason = "invalid_filter"
+			s.metrics.Record(event)
 			return errorResult(err.Error())
 		}
 		filters = append(filters, Filter{Type: ft, Arg: f.Expr})
@@ -228,25 +294,27 @@ func (s *Server) handleRun(ctx context.Context, params json.RawMessage) *ToolRes
 		timeoutSec = *args.Timeout
 	}
 
-	// Determine max output lines.
+	// Determine final response limits after filters.
 	maxLines := s.config.MaxOutputFor(basename)
 	if args.MaxLines != nil {
 		maxLines = *args.MaxLines
 	}
+	maxBytes := s.config.Defaults.MaxOutputBytes
+	if args.MaxBytes != nil {
+		maxBytes = *args.MaxBytes
+	}
 
 	// Execute with timing.
 	start := time.Now()
-	result, err := Execute(ctx, s.config, parsed, timeoutSec, maxLines, args.Cwd)
+	result, err := ExecuteWithLimits(ctx, s.config, parsed, timeoutSec, maxLines, maxBytes, s.config.Defaults.MaxStreamBytes, args.Cwd)
 	durationMs := time.Since(start).Milliseconds()
 
 	if err != nil {
-		s.metrics.Record(MetricsEvent{
-			Tool:       "run",
-			Command:    args.Command,
-			Allowed:    true,
-			Filters:    args.Filters,
-			DurationMs: durationMs,
-		})
+		event := runMetricsEvent(args, basename, parts)
+		event.Allowed = true
+		event.RejectionReason = "execution_error"
+		event.DurationMs = durationMs
+		s.metrics.Record(event)
 		return errorResult(err.Error())
 	}
 
@@ -254,17 +322,15 @@ func (s *Server) handleRun(ctx context.Context, params json.RawMessage) *ToolRes
 	outputLines := countLines(result.Stdout)
 	exitCode := result.ExitCode
 
-	s.metrics.Record(MetricsEvent{
-		Tool:            "run",
-		Command:         args.Command,
-		Allowed:         true,
-		Filters:         args.Filters,
-		ExitCode:        &exitCode,
-		DurationMs:      durationMs,
-		OutputLinesPre:  outputLines,
-		OutputLinesPost: outputLines, // same if no filters changed line count at this level
-		Truncated:       result.Truncated,
-	})
+	event := runMetricsEvent(args, basename, parts)
+	event.Allowed = true
+	event.ExitCode = &exitCode
+	event.DurationMs = durationMs
+	event.OutputLinesPre = outputLines
+	event.OutputLinesPost = outputLines // same if no filters changed line count at this level
+	event.Truncated = result.Truncated
+	event.StderrTruncated = result.StderrTruncated
+	s.metrics.Record(event)
 
 	return textResult(formatResult(result))
 }
@@ -279,7 +345,7 @@ type findArgs struct {
 	Exclude  []string `json:"exclude,omitempty"`
 }
 
-func (s *Server) handleFind(_ context.Context, params json.RawMessage) *ToolResult {
+func (s *Server) handleFind(ctx context.Context, params json.RawMessage) *ToolResult {
 	var args findArgs
 	if err := json.Unmarshal(params, &args); err != nil {
 		return errorResult("parse params: " + err.Error())
@@ -339,9 +405,9 @@ func (s *Server) handleFind(_ context.Context, params json.RawMessage) *ToolResu
 		return errorResult(fmt.Sprintf("path %q is not a directory", args.Path))
 	}
 
-	// Run find with timing.
+	// Run find with timing and the server's bounded result collection.
 	start := time.Now()
-	results, err := RunFind(fp)
+	search, err := RunFindWithLimits(ctx, fp, s.config.Defaults.MaxFindResults)
 	durationMs := time.Since(start).Milliseconds()
 
 	if err != nil {
@@ -355,7 +421,7 @@ func (s *Server) handleFind(_ context.Context, params json.RawMessage) *ToolResu
 	}
 
 	// Record metrics.
-	resultCount := len(results)
+	resultCount := len(search.Results)
 	findParams := map[string]any{}
 	if args.Name != "" {
 		findParams["name"] = args.Name
@@ -377,32 +443,47 @@ func (s *Server) handleFind(_ context.Context, params json.RawMessage) *ToolResu
 	}
 
 	s.metrics.Record(MetricsEvent{
-		Tool:        "find",
-		Path:        args.Path,
-		FindParams:  findParams,
-		Allowed:     true,
-		DurationMs:  durationMs,
-		ResultCount: &resultCount,
+		Tool:          "find",
+		Path:          args.Path,
+		FindParams:    findParams,
+		Allowed:       true,
+		DurationMs:    durationMs,
+		ResultCount:   &resultCount,
+		FindTruncated: search.Truncated,
 	})
 
-	// Format output — one path per line, with type/size info.
-	if len(results) == 0 {
-		return textResult("no matches found")
+	return textResult(formatFindResults(search, s.config.Defaults.MaxOutputBytes))
+}
+
+func formatFindResults(search FindSearchResult, maxBytes int) string {
+	if len(search.Results) == 0 {
+		return "no matches found"
 	}
 
 	var b strings.Builder
-	for _, r := range results {
-		switch r.Type {
+	shown := 0
+	truncated := search.Truncated
+	for _, result := range search.Results {
+		line := result.Path + "\n"
+		switch result.Type {
 		case "dir":
-			fmt.Fprintf(&b, "%s/\n", r.Path)
+			line = result.Path + "/\n"
 		case "symlink":
-			fmt.Fprintf(&b, "%s@\n", r.Path)
-		default:
-			fmt.Fprintf(&b, "%s\n", r.Path)
+			line = result.Path + "@\n"
 		}
+		if maxBytes > 0 && b.Len()+len(line) > maxBytes {
+			truncated = true
+			break
+		}
+		b.WriteString(line)
+		shown++
 	}
-	fmt.Fprintf(&b, "\n--- %d matches\n", len(results))
-	return textResult(b.String())
+	if truncated {
+		fmt.Fprintf(&b, "\n--- %d matches shown; results truncated\n", shown)
+	} else {
+		fmt.Fprintf(&b, "\n--- %d matches\n", shown)
+	}
+	return b.String()
 }
 
 func parseFilterType(s string) (FilterType, error) {
@@ -443,7 +524,10 @@ func formatResult(r *RunResult) string {
 		meta = append(meta, fmt.Sprintf("exit_code=%d", r.ExitCode))
 	}
 	if r.Truncated {
-		meta = append(meta, "truncated=true")
+		meta = append(meta, "truncated=true (final output reached max_lines or max_bytes)")
+	}
+	if r.StderrTruncated {
+		meta = append(meta, "stderr_truncated=true (stderr reached max_stream_bytes)")
 	}
 	if r.Stderr != "" {
 		meta = append(meta, fmt.Sprintf("stderr=%s", strings.TrimSpace(r.Stderr)))
@@ -459,7 +543,6 @@ func formatResult(r *RunResult) string {
 
 	return b.String()
 }
-
 
 func countLines(s string) int {
 	if s == "" {

@@ -12,20 +12,31 @@ import (
 
 // MetricsEvent is a single recorded tool invocation.
 type MetricsEvent struct {
-	Timestamp      string      `json:"ts"`
-	Tool           string      `json:"tool"`
-	Command        string      `json:"command,omitempty"`
-	Allowed        bool        `json:"allowed"`
-	Filters        []filterArg `json:"filters,omitempty"`
-	ExitCode       *int        `json:"exit_code,omitempty"`
-	DurationMs     int64       `json:"duration_ms,omitempty"`
-	OutputLinesPre int         `json:"output_lines_pre,omitempty"`
-	OutputLinesPost int        `json:"output_lines_post,omitempty"`
-	Truncated      bool        `json:"truncated,omitempty"`
+	Timestamp         string            `json:"ts"`
+	Tool              string            `json:"tool"`
+	Command           string            `json:"command,omitempty"`
+	Executable        string            `json:"executable,omitempty"`
+	Arguments         []string          `json:"arguments,omitempty"`
+	Subcommand        string            `json:"subcommand,omitempty"`
+	Cwd               string            `json:"cwd,omitempty"`
+	Env               map[string]string `json:"env,omitempty"`
+	RequestedTimeout  *int              `json:"requested_timeout,omitempty"`
+	RequestedMaxLines *int              `json:"requested_max_lines,omitempty"`
+	RequestedMaxBytes *int              `json:"requested_max_bytes,omitempty"`
+	RejectionReason   string            `json:"rejection_reason,omitempty"`
+	Allowed           bool              `json:"allowed"`
+	Filters           []filterArg       `json:"filters,omitempty"`
+	ExitCode          *int              `json:"exit_code,omitempty"`
+	DurationMs        int64             `json:"duration_ms,omitempty"`
+	OutputLinesPre    int               `json:"output_lines_pre,omitempty"`
+	OutputLinesPost   int               `json:"output_lines_post,omitempty"`
+	Truncated         bool              `json:"truncated,omitempty"`
+	StderrTruncated   bool              `json:"stderr_truncated,omitempty"`
 	// find-specific fields
-	Path        string         `json:"path,omitempty"`
-	FindParams  map[string]any `json:"params,omitempty"`
-	ResultCount *int           `json:"result_count,omitempty"`
+	Path          string         `json:"path,omitempty"`
+	FindParams    map[string]any `json:"params,omitempty"`
+	ResultCount   *int           `json:"result_count,omitempty"`
+	FindTruncated bool           `json:"find_truncated,omitempty"`
 }
 
 // MetricsCollector handles writing metrics events to daily JSONL files.

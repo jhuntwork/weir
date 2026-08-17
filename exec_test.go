@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testConfig() *Config {
@@ -126,6 +130,63 @@ func TestExecuteTimeout(t *testing.T) {
 	}
 	if !strings.Contains(result.Stderr, "timed out") {
 		t.Fatalf("stderr should mention timeout, got: %q", result.Stderr)
+	}
+}
+
+func TestExecuteTimeoutTerminatesProcessGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups are not configured by the non-Unix fallback")
+	}
+
+	marker := filepath.Join(t.TempDir(), "child-survived")
+	result, err := Execute(context.Background(), testConfig(), &Parsed{
+		Command: "sh",
+		Args: []string{
+			"-c",
+			`(sleep 2; printf survived > "$1") & wait`,
+			"sh",
+			marker,
+		},
+	}, 1, 1000, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.ExitCode != -1 {
+		t.Fatalf("exit code: got %d, want -1 (timeout)", result.ExitCode)
+	}
+
+	// Without process-group termination, the background subshell survives the
+	// timed-out shell and writes this marker after two seconds.
+	time.Sleep(2200 * time.Millisecond)
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("timed-out command left a child running; marker stat error: %v", err)
+	}
+}
+
+func TestExecuteStreamLimitTerminatesProcessGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups are not configured by the non-Unix fallback")
+	}
+
+	marker := filepath.Join(t.TempDir(), "child-survived")
+	_, err := ExecuteWithLimits(context.Background(), testConfig(), &Parsed{
+		Command: "sh",
+		Args: []string{
+			"-c",
+			`(sleep 2; printf survived > "$1") & while :; do printf x; done`,
+			"sh",
+			marker,
+		},
+	}, 10, 0, 0, 1024, "")
+	if err == nil || !strings.Contains(err.Error(), "stream budget") {
+		t.Fatalf("got %v, want stream-budget error", err)
+	}
+
+	// Stream-limit cleanup must terminate the same process group used for a
+	// context timeout, including the background subshell.
+	time.Sleep(2200 * time.Millisecond)
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("stream-limited command left a child running; marker stat error: %v", err)
 	}
 }
 

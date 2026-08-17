@@ -1,11 +1,10 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,49 +14,76 @@ import (
 
 // RunResult is the structured output returned to the model.
 type RunResult struct {
-	Stdout    string `json:"stdout"`
-	Stderr    string `json:"stderr,omitempty"`
-	ExitCode  int    `json:"exit_code"`
-	Filtered  bool   `json:"filtered,omitempty"`
-	Truncated bool   `json:"truncated,omitempty"`
+	Stdout          string `json:"stdout"`
+	Stderr          string `json:"stderr,omitempty"`
+	ExitCode        int    `json:"exit_code"`
+	Filtered        bool   `json:"filtered,omitempty"`
+	Truncated       bool   `json:"truncated,omitempty"`
+	StderrTruncated bool   `json:"stderr_truncated,omitempty"`
 }
 
-// Execute runs a parsed command through the whitelist, streams output
-// through filters, and returns a structured result.
+// limitedBuffer captures at most limit bytes while continuing to accept writes
+// so a verbose child process cannot grow stderr in memory without bound.
+type limitedBuffer struct {
+	buffer    bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.limit <= 0 {
+		return b.buffer.Write(p)
+	}
+	remaining := b.limit - b.buffer.Len()
+	if remaining <= 0 {
+		b.truncated = true
+		return len(p), nil
+	}
+	if len(p) > remaining {
+		_, _ = b.buffer.Write(p[:remaining])
+		b.truncated = true
+		return len(p), nil
+	}
+	_, err := b.buffer.Write(p)
+	return len(p), err
+}
+
+// Execute runs a parsed command through the whitelist. It preserves the
+// historic API for callers that use Config defaults directly.
 func Execute(ctx context.Context, cfg *Config, p *Parsed, timeoutSec int, maxLines int, cwd string) (*RunResult, error) {
-	// Validate against whitelist.
+	return ExecuteWithLimits(ctx, cfg, p, timeoutSec, maxLines, cfg.Defaults.MaxOutputBytes, cfg.Defaults.MaxStreamBytes, cwd)
+}
+
+// ExecuteWithLimits runs a command and applies response limits after its filter
+// pipeline. MaxStreamBytes bounds every pipeline edge so buffered filters never
+// accumulate unbounded input or output in memory.
+func ExecuteWithLimits(ctx context.Context, cfg *Config, p *Parsed, timeoutSec, maxLines, maxBytes, maxStreamBytes int, cwd string) (*RunResult, error) {
 	basename := filepath.Base(p.Command)
 	if !cfg.IsAllowed(basename) {
 		return nil, fmt.Errorf("command %q is not in the whitelist", basename)
 	}
-
-	// Validate subcommand if restricted.
 	if !cfg.IsSubcommandAllowed(basename, p.Args) {
-		allowed := cfg.Commands[basename].Subcommands
 		return nil, fmt.Errorf("subcommand %q is not allowed for %q (allowed: %s)",
-			firstArg(p.Args), basename, strings.Join(allowed, ", "))
+			firstArg(p.Args), basename, strings.Join(cfg.Commands[basename].Subcommands, ", "))
 	}
 
-	// Resolve binary path.
 	binPath, err := cfg.Resolve(basename)
 	if err != nil {
 		return nil, err
 	}
 
-	// Build timeout context.
 	if timeoutSec > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 		defer cancel()
 	}
 
-	// Build command.
 	cmd := exec.CommandContext(ctx, binPath, p.Args...)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
+	configureProcessTree(cmd)
 
-	// Environment: inherit current env, add config env, add request env.
 	env := os.Environ()
 	if cfgEnv := cfg.EnvFor(basename); cfgEnv != nil {
 		for k, v := range cfgEnv {
@@ -69,72 +95,48 @@ func Execute(ctx context.Context, cfg *Config, p *Parsed, timeoutSec int, maxLin
 	}
 	cmd.Env = env
 
-	// Capture stderr separately.
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	// Set up stdout pipeline.
-	var output string
-	filtered := len(p.Filters) > 0
-	truncated := false
-
-	if filtered {
-		// Stream stdout through the filter chain.
-		stdoutPipe, err := cmd.StdoutPipe()
-		if err != nil {
-			return nil, fmt.Errorf("stdout pipe: %w", err)
-		}
-
-		if err := cmd.Start(); err != nil {
-			return nil, fmt.Errorf("start: %w", err)
-		}
-
-		// Build the reader pipeline: stdout → filters.
-		// When filters are present, skip max-lines truncation — the filters
-		// themselves are the narrowing mechanism. Pre-truncation breaks
-		// structured filters like jq that need complete input.
-		var reader io.Reader = stdoutPipe
-
-		// Apply filter chain.
-		output, err = ApplyFilterStream(reader, p.Filters)
-		if err != nil {
-			// Drain any remaining stdout to avoid blocking the process.
-			io.Copy(io.Discard, stdoutPipe)
-			cmd.Wait()
-			return &RunResult{
-				Stdout:   "",
-				Stderr:   fmt.Sprintf("filter error: %v", err),
-				ExitCode: -1,
-			}, nil
-		}
-
-		// Wait for process to finish.
-		err = cmd.Wait()
-	} else {
-		// No filters — capture stdout directly.
-		var stdout bytes.Buffer
-		cmd.Stdout = &stdout
-
-		err = cmd.Run()
-		output = stdout.String()
-		if err == nil && maxLines > 0 {
-			lines := strings.Split(output, "\n")
-			if len(lines) > maxLines {
-				output = strings.Join(lines[:maxLines], "\n")
-				truncated = true
-			}
-		}
+	stderr := &limitedBuffer{limit: maxStreamBytes}
+	cmd.Stderr = stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start: %w", err)
 	}
 
+	var output string
+	var truncated bool
+	if len(p.Filters) > 0 {
+		output, truncated, err = ApplyFilterStreamWithLimits(stdout, p.Filters, maxLines, maxBytes, maxStreamBytes)
+	} else {
+		output, truncated, err = CollectOutput(newByteLimitReader(stdout, maxStreamBytes), maxLines, maxBytes)
+	}
+	if err != nil {
+		// Once a stream budget is exceeded, stop the child rather than leaving a
+		// writer blocked on stdout while this request holds the server loop.
+		_ = terminateProcessTree(cmd)
+		_ = cmd.Wait()
+		if errors.Is(err, ErrStreamLimit) {
+			return nil, fmt.Errorf("command output exceeded the %d-byte stream budget; narrow the command or filter earlier", maxStreamBytes)
+		}
+		return nil, fmt.Errorf("process output: %w", err)
+	}
+
+	err = cmd.Wait()
 	exitCode := 0
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return &RunResult{
-				Stdout:   output,
-				Stderr:   fmt.Sprintf("command timed out after %d seconds", timeoutSec),
-				ExitCode: -1,
+				Stdout:          output,
+				Stderr:          fmt.Sprintf("command timed out after %d seconds", timeoutSec),
+				ExitCode:        -1,
+				Filtered:        len(p.Filters) > 0,
+				Truncated:       truncated,
+				StderrTruncated: stderr.truncated,
 			}, nil
-		} else if exitErr, ok := err.(*exec.ExitError); ok {
+		}
+		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
 		} else {
 			return nil, fmt.Errorf("exec: %w", err)
@@ -142,73 +144,18 @@ func Execute(ctx context.Context, cfg *Config, p *Parsed, timeoutSec int, maxLin
 	}
 
 	return &RunResult{
-		Stdout:    output,
-		Stderr:    stderr.String(),
-		ExitCode:  exitCode,
-		Filtered:  filtered,
-		Truncated: truncated,
+		Stdout:          output,
+		Stderr:          stderr.buffer.String(),
+		ExitCode:        exitCode,
+		Filtered:        len(p.Filters) > 0,
+		Truncated:       truncated,
+		StderrTruncated: stderr.truncated,
 	}, nil
-}
-
-// maxLinesReader reads up to N lines from the underlying reader, then
-// returns EOF. Sets *truncated to true if lines were discarded.
-type maxLinesReader struct {
-	scanner   *bufio.Scanner
-	remaining int
-	truncated *bool
-	buf       bytes.Buffer
-	done      bool
-}
-
-func newMaxLinesReader(r io.Reader, maxLines int, truncated *bool) io.Reader {
-	return &maxLinesReader{
-		scanner:   bufio.NewScanner(r),
-		remaining: maxLines,
-		truncated: truncated,
-	}
-}
-
-func (m *maxLinesReader) Read(p []byte) (int, error) {
-	// If we have buffered data from a previous scan, serve it first.
-	if m.buf.Len() > 0 {
-		return m.buf.Read(p)
-	}
-	if m.done {
-		return 0, io.EOF
-	}
-
-	// Scan the next line.
-	if !m.scanner.Scan() {
-		m.done = true
-		if err := m.scanner.Err(); err != nil {
-			return 0, err
-		}
-		return 0, io.EOF
-	}
-
-	if m.remaining <= 0 {
-		// We've hit the limit. Mark truncated and stop.
-		*m.truncated = true
-		m.done = true
-		return 0, io.EOF
-	}
-
-	m.remaining--
-	m.buf.WriteString(m.scanner.Text())
-	m.buf.WriteByte('\n')
-	return m.buf.Read(p)
 }
 
 func firstArg(args []string) string {
 	if len(args) == 0 {
 		return ""
 	}
-	// Skip flags to find the subcommand, matching IsSubcommandAllowed logic.
-	for _, a := range args {
-		if len(a) > 0 && a[0] != '-' {
-			return a
-		}
-	}
-	// All args are flags — return the first one for the error message.
 	return args[0]
 }

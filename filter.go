@@ -3,56 +3,161 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
 
-// ApplyFilterStream applies the filter chain to an io.Reader, returning
-// the final output as a string. Filters are composed as a pipeline:
-// each stage reads from the previous stage's output.
-func ApplyFilterStream(r io.Reader, filters []Filter) (string, error) {
-	current := r
-	for _, f := range filters {
-		next, err := buildStage(current, f)
-		if err != nil {
-			return "", fmt.Errorf("filter %s: %w", filterName(f.Type), err)
-		}
-		current = next
-	}
+const maxFilterLineBytes = 1 * 1024 * 1024
 
-	// Drain the final reader into a string.
-	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, current); err != nil {
-		return "", fmt.Errorf("reading filter output: %w", err)
-	}
-	return strings.TrimRight(buf.String(), "\n"), nil
+// ErrStreamLimit marks a hard resource budget breach. Callers must not return
+// a plausible-looking partial result for filters that require complete input.
+var ErrStreamLimit = errors.New("stream byte budget exceeded")
+
+func newLineScanner(input io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(input)
+	scanner.Buffer(make([]byte, 64*1024), maxFilterLineBytes)
+	return scanner
 }
 
-// buildStage creates an io.Reader that reads from `input` and applies
-// the given filter. For grep/head this is a streaming pipe; for jq it
-// wires through the jq process; for tail it must buffer.
-func buildStage(input io.Reader, f Filter) (io.Reader, error) {
-	switch f.Type {
+// byteLimitReader permits exactly limit bytes and then probes for one more byte
+// so a stream that ends exactly at the limit remains valid.
+type byteLimitReader struct {
+	input     io.Reader
+	remaining int
+	limited   bool
+}
+
+func newByteLimitReader(input io.Reader, limit int) io.Reader {
+	if limit <= 0 {
+		return input
+	}
+	return &byteLimitReader{input: input, remaining: limit, limited: true}
+}
+
+func (r *byteLimitReader) Read(p []byte) (int, error) {
+	if !r.limited {
+		return r.input.Read(p)
+	}
+	if r.remaining == 0 {
+		var probe [1]byte
+		n, err := r.input.Read(probe[:])
+		if n > 0 {
+			return 0, ErrStreamLimit
+		}
+		return n, err
+	}
+	if len(p) > r.remaining {
+		p = p[:r.remaining]
+	}
+	n, err := r.input.Read(p)
+	r.remaining -= n
+	return n, err
+}
+
+// outputCollector limits only the final response. It keeps draining its input
+// after reaching a line/byte response limit so upstream pipe stages finish.
+type outputCollector struct {
+	output    bytes.Buffer
+	maxLines  int
+	maxBytes  int
+	lines     int
+	lineOpen  bool
+	truncated bool
+}
+
+func (c *outputCollector) Write(p []byte) (int, error) {
+	for _, b := range p {
+		if c.truncated {
+			continue
+		}
+		if c.maxBytes > 0 && c.output.Len() >= c.maxBytes {
+			c.truncated = true
+			continue
+		}
+		if c.maxLines > 0 && !c.lineOpen && c.lines >= c.maxLines {
+			c.truncated = true
+			continue
+		}
+		c.output.WriteByte(b)
+		if !c.lineOpen {
+			c.lines++
+			c.lineOpen = true
+		}
+		if b == '\n' {
+			c.lineOpen = false
+		}
+	}
+	return len(p), nil
+}
+
+// CollectOutput drains input, retaining only the configured final response.
+// Its caller must wrap input in byteLimitReader for a hard stream budget.
+func CollectOutput(input io.Reader, maxLines, maxBytes int) (string, bool, error) {
+	collector := &outputCollector{maxLines: maxLines, maxBytes: maxBytes}
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := input.Read(buf)
+		if n > 0 {
+			_, _ = collector.Write(buf[:n])
+		}
+		if err == io.EOF {
+			return collector.output.String(), collector.truncated, nil
+		}
+		if err != nil {
+			return collector.output.String(), collector.truncated, err
+		}
+	}
+}
+
+// ApplyFilterStream keeps the historic unbounded API for direct unit callers.
+func ApplyFilterStream(input io.Reader, filters []Filter) (string, error) {
+	output, _, err := ApplyFilterStreamWithLimits(input, filters, 0, 0, 0)
+	return strings.TrimRight(output, "\n"), err
+}
+
+// ApplyFilterStreamWithLimits applies filters left-to-right and limits the
+// response only after the final stage. Every pipeline edge has the hard stream
+// byte budget so filters that buffer input cannot consume unbounded memory.
+func ApplyFilterStreamWithLimits(input io.Reader, filters []Filter, maxLines, maxBytes, maxStreamBytes int) (string, bool, error) {
+	var current io.Reader = newByteLimitReader(input, maxStreamBytes)
+	for _, filter := range filters {
+		next, err := buildStage(current, filter)
+		if err != nil {
+			return "", false, fmt.Errorf("filter %s: %w", filterName(filter.Type), err)
+		}
+		current = newByteLimitReader(next, maxStreamBytes)
+	}
+	output, truncated, err := CollectOutput(current, maxLines, maxBytes)
+	if err != nil {
+		return output, truncated, fmt.Errorf("reading filter output: %w", err)
+	}
+	return strings.TrimRight(output, "\n"), truncated, nil
+}
+
+func buildStage(input io.Reader, filter Filter) (io.Reader, error) {
+	switch filter.Type {
 	case FilterGrep:
-		return newGrepReader(input, f.Arg, false)
+		return newGrepReader(input, filter.Arg, false)
 	case FilterGrepV:
-		return newGrepReader(input, f.Arg, true)
+		return newGrepReader(input, filter.Arg, true)
 	case FilterJQ:
-		return newJQReader(input, f.Arg)
+		return newJQReader(input, filter.Arg)
 	case FilterHead:
-		return newHeadReader(input, f.Arg)
+		return newHeadReader(input, filter.Arg)
 	case FilterTail:
-		return newTailReader(input, f.Arg)
+		return newTailReader(input, filter.Arg)
 	case FilterSort:
-		return newSortReader(input, f.Arg)
+		return newSortReader(input, filter.Arg)
 	case FilterUniq:
-		return newUniqReader(input, f.Arg)
+		return newUniqReader(input, filter.Arg)
 	case FilterWC:
-		return newWCReader(input, f.Arg)
+		return newWCReader(input, filter.Arg)
 	default:
 		return nil, fmt.Errorf("unknown filter type")
 	}
@@ -68,22 +173,22 @@ func newGrepReader(input io.Reader, pattern string, invert bool) (io.Reader, err
 
 	pr, pw := io.Pipe()
 	go func() {
-		scanner := bufio.NewScanner(input)
+		scanner := newLineScanner(input)
 		for scanner.Scan() {
 			line := scanner.Text()
 			match := re.MatchString(line)
 			if match != invert {
 				if _, err := fmt.Fprintln(pw, line); err != nil {
-					pw.CloseWithError(err)
+					_ = pw.CloseWithError(err)
 					return
 				}
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			pw.CloseWithError(err)
+			_ = pw.CloseWithError(err)
 			return
 		}
-		pw.Close()
+		_ = pw.Close()
 	}()
 	return pr, nil
 }
@@ -101,17 +206,13 @@ func newJQReader(input io.Reader, expr string) (io.Reader, error) {
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("jq stdout pipe: %w", err)
 	}
-
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("jq start: %w", err)
 	}
-
-	// Wrap in a reader that waits for the process on EOF/close.
 	return &jqReader{stdout: stdout, cmd: cmd, stderr: &stderr}, nil
 }
 
@@ -137,29 +238,36 @@ func (j *jqReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// --- Head: streaming with early termination ---
+// --- Head: stream the first N lines while continuing to drain input ---
 
 func newHeadReader(input io.Reader, countStr string) (io.Reader, error) {
 	n, err := strconv.Atoi(countStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid count: %w", err)
 	}
-	if n <= 0 {
-		return strings.NewReader(""), nil
+	if n < 0 {
+		n = 0
 	}
 
 	pr, pw := io.Pipe()
 	go func() {
-		scanner := bufio.NewScanner(input)
+		scanner := newLineScanner(input)
 		written := 0
-		for scanner.Scan() && written < n {
+		for scanner.Scan() {
+			if written >= n {
+				continue // Drain upstream like a completed pipe stage.
+			}
 			if _, err := fmt.Fprintln(pw, scanner.Text()); err != nil {
-				pw.CloseWithError(err)
+				_ = pw.CloseWithError(err)
 				return
 			}
 			written++
 		}
-		pw.Close()
+		if err := scanner.Err(); err != nil {
+			_ = pw.CloseWithError(err)
+			return
+		}
+		_ = pw.Close()
 	}()
 	return pr, nil
 }
@@ -175,12 +283,10 @@ func newTailReader(input io.Reader, countStr string) (io.Reader, error) {
 		return strings.NewReader(""), nil
 	}
 
-	// Ring buffer of last N lines.
-	scanner := bufio.NewScanner(input)
+	scanner := newLineScanner(input)
 	ring := make([]string, 0, n)
 	pos := 0
 	full := false
-
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !full {
@@ -197,7 +303,6 @@ func newTailReader(input io.Reader, countStr string) (io.Reader, error) {
 		return nil, fmt.Errorf("reading input for tail: %w", err)
 	}
 
-	// Reconstruct in order.
 	var result []string
 	if full {
 		result = append(result, ring[pos:]...)
@@ -208,10 +313,10 @@ func newTailReader(input io.Reader, countStr string) (io.Reader, error) {
 	return strings.NewReader(strings.Join(result, "\n")), nil
 }
 
-// --- Sort: buffer all input, sort lines, emit ---
+// --- Sort: must buffer all input, then sort lines ---
 
 func newSortReader(input io.Reader, opts string) (io.Reader, error) {
-	scanner := bufio.NewScanner(input)
+	scanner := newLineScanner(input)
 	var lines []string
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
@@ -229,7 +334,6 @@ func newSortReader(input io.Reader, opts string) (io.Reader, error) {
 		case "-n", "n", "numeric":
 			numeric = true
 		case "":
-			// no option
 		default:
 			return nil, fmt.Errorf("unknown sort option %q (allowed: reverse, numeric, or empty for lexicographic)", opt)
 		}
@@ -240,12 +344,11 @@ func newSortReader(input io.Reader, opts string) (io.Reader, error) {
 	} else {
 		sortLexicographic(lines, reverse)
 	}
-
 	return strings.NewReader(strings.Join(lines, "\n")), nil
 }
 
 func sortLexicographic(lines []string, reverse bool) {
-	sortSliceStable(lines, func(i, j int) bool {
+	sort.SliceStable(lines, func(i, j int) bool {
 		if reverse {
 			return lines[i] > lines[j]
 		}
@@ -254,7 +357,7 @@ func sortLexicographic(lines []string, reverse bool) {
 }
 
 func sortNumeric(lines []string, reverse bool) {
-	sortSliceStable(lines, func(i, j int) bool {
+	sort.SliceStable(lines, func(i, j int) bool {
 		ni := parseLeadingNumber(lines[i])
 		nj := parseLeadingNumber(lines[j])
 		if reverse {
@@ -281,17 +384,6 @@ func parseLeadingNumber(s string) float64 {
 	return n
 }
 
-// sortSliceStable is a simple insertion sort — good enough for the
-// typical <10k lines seen in command output. Avoids importing sort
-// package for a single use in this file.
-func sortSliceStable(s []string, less func(i, j int) bool) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && less(j, j-1); j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
-}
-
 // --- Uniq: deduplicate adjacent identical lines ---
 
 func newUniqReader(input io.Reader, opts string) (io.Reader, error) {
@@ -301,18 +393,16 @@ func newUniqReader(input io.Reader, opts string) (io.Reader, error) {
 		case "-c", "c", "count":
 			count = true
 		case "":
-			// no option
 		default:
 			return nil, fmt.Errorf("unknown uniq option %q (allowed: count, or empty for plain dedup)", opt)
 		}
 	}
 
-	scanner := bufio.NewScanner(input)
+	scanner := newLineScanner(input)
 	var result []string
 	var prev string
 	n := 0
 	first := true
-
 	for scanner.Scan() {
 		line := scanner.Text()
 		if first {
@@ -336,7 +426,6 @@ func newUniqReader(input io.Reader, opts string) (io.Reader, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("reading input for uniq: %w", err)
 	}
-	// Flush last group.
 	if !first {
 		if count {
 			result = append(result, fmt.Sprintf("%7d %s", n, prev))
@@ -344,22 +433,20 @@ func newUniqReader(input io.Reader, opts string) (io.Reader, error) {
 			result = append(result, prev)
 		}
 	}
-
 	return strings.NewReader(strings.Join(result, "\n")), nil
 }
 
 // --- WC: count lines, words, or bytes ---
 
 func newWCReader(input io.Reader, mode string) (io.Reader, error) {
-	scanner := bufio.NewScanner(input)
+	scanner := newLineScanner(input)
 	lines := 0
 	words := 0
 	chars := 0
-
 	for scanner.Scan() {
 		line := scanner.Text()
 		lines++
-		chars += len(line) + 1 // +1 for newline
+		chars += len(line) + 1
 		words += len(strings.Fields(line))
 	}
 	if err := scanner.Err(); err != nil {

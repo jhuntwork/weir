@@ -78,7 +78,6 @@ func NewServer(cfg *Config, version string, metrics *MetricsCollector) *Server {
 		metrics:  metrics,
 	}
 	s.registerTools()
-	s.registerDecoy()
 	return s
 }
 

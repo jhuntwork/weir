@@ -1,11 +1,14 @@
 # weir
 
-An MCP server that gives AI agents controlled access to the local system.
+An MCP routing interface for AI agents that keeps direct tools intentionally
+small and steers reusable operations toward [Swamp](https://swamp-club.com/).
 
-Agents need to run commands and search filesystems, but unrestricted shell
-access is a bad idea. Weir sits in between: you whitelist exactly which
-commands an agent can run, and the built-in find tool exposes only safe,
-read-only filesystem queries. Everything else is denied.
+Weir is not a sandbox or security boundary. Its `run` and `find` tools are
+bounded, legible escape hatches: `swamp` is the primary operation surface;
+`rg`, limited extension-development validation, and read-only Git inspection
+remain direct where useful. A denied command is product feedback: search for a
+Swamp capability, inspect whether it fits, then extend or build durable tooling
+only when needed.
 
 ## Usage
 
@@ -13,24 +16,40 @@ read-only filesystem queries. Everything else is denied.
 weir --run-allow cmd1,cmd2,... [--find-deny /path1,/path2,...] [--timeout 60] [--max-lines 1000]
 ```
 
-**--run-allow** (required): comma-separated list of command basenames to whitelist.
-Commands not in this list are rejected.
+**--run-allow** (required): comma-separated list of command basenames to
+allow. Commands not in this list are routed to Swamp-first guidance.
 
-Entries can optionally define allowed subcommands using colon-separated
-syntax:
+Entries can optionally define allowed subcommands using colon-separated syntax.
+The current recommended direct surface is:
 
 ```
-weir --run-allow "swamp,rg,deno:test;fmt;lint;check,git:status;log;diff;checkout;commit;push;fetch;remote"
+weir --run-allow "swamp,rg,deno:test;fmt;lint;check,git:status;log;diff"
 ```
 
-- `swamp` — all subcommands allowed (no restriction)
-- `deno:test;fmt;lint;check` — only `deno test`, `deno fmt`, `deno lint`,
-  and `deno check` are allowed; `deno eval`, `deno run`, etc. are rejected
-- `git:status;log;diff;...` — only the listed git subcommands are allowed
+- `swamp` — primary typed operation surface; all Swamp subcommands are allowed
+- `rg` — small, general-purpose read-only exploration primitive
+- `deno:test;fmt;lint;check` — extension-development validation only; `deno
+  eval`, `deno run`, and other execution forms are denied
+- `git:status;log;diff` — read-only inspection only
 
 When subcommands are specified, the first argument to the command is checked
-against the list. If it doesn't match, the request is denied with an error
-naming the allowed subcommands.
+against the list. Use the canonical form `command subcommand [args...]`; flags
+before the subcommand are intentionally unsupported. If it does not match, the
+request is denied with the allowed subcommands and a Swamp-first handoff.
+
+### Denied-operation handoff
+
+For a denied operation such as `git commit`, Weir preserves the attempted
+operation in its telemetry and directs the agent to:
+
+1. Search model extensions by service, not operation:
+   `swamp extension search "git" --content-type models --json`
+2. Prefer `@swamp/*` candidates, but inspect their types and methods before
+   pulling: `swamp extension info <package> --json`
+3. Pull only a candidate with the needed type and method; otherwise check local
+   types: `swamp model type search "git" --json`
+4. Extend the closest fitting model type. Create a new Swamp model extension
+   only when no type covers the operation.
 
 **--find-deny**: additional paths to block from `find` searches. Appends to
 the hardcoded deny list (`/`, `/proc`, `/sys`, `/dev`).
@@ -39,8 +58,19 @@ the hardcoded deny list (`/`, `/proc`, `/sys`, `/dev`).
 Defaults to 60.
 
 **--max-lines**: default maximum output lines returned from commands. 0 means
-unlimited. Defaults to 1000. Can be overridden per-request via the `max_lines`
-field in a tool call.
+unlimited. Can be overridden per request via `max_lines`. Applied after all
+filters.
+
+**--max-bytes**: default maximum output bytes returned from commands. 0 means
+unlimited. Can be overridden per request via `max_bytes`. Applied after all
+filters.
+
+**--max-stream-bytes**: hard byte budget for each command/filter pipeline
+stage. Defaults to 32 MiB. Buffered filters fail explicitly if they cannot
+compute a complete result inside this budget.
+
+**--max-find-results**: maximum `find` matches collected and returned. Defaults
+to 1000; truncated searches say so in their result.
 
 ## Tools
 
@@ -94,18 +124,15 @@ go build -o weir .
 
 ## Philosophy
 
-Weir's whitelist is intentionally small. If you find yourself wanting to add
-many commands, that's a signal the work should live in structured tooling
-instead — something with validation, state tracking, and versioned output
-rather than raw shell access.
+Weir's direct surface is intentionally small. If work repeatedly needs a raw
+command, that is evidence the operation should live in structured, reusable
+Swamp tooling instead: typed models and methods with validation, state tracking,
+and versioned output.
 
-For us, that's [swamp](https://github.com/swamp-labs/swamp). Commands that
-agents need regularly become swamp extensions: typed, schema-validated, with
-checks that gate execution. Weir provides the escape hatch (`rg` for search,
-`swamp` for everything else); the extensions provide the real surface area.
-
-The constraint is the point. An ever-growing whitelist is a sign the
-architecture is missing a layer.
+A denied command is therefore a routing signal, not an invitation to grow the
+allowlist. Weir keeps `rg` for exploration and `swamp` for durable operations;
+Swamp extensions provide the real capability surface. An ever-growing direct
+allowlist is a sign the architecture is missing that layer.
 
 ## Protocol
 

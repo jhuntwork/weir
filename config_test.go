@@ -132,15 +132,16 @@ func TestIsSubcommandAllowed(t *testing.T) {
 		t.Fatal("expected unrestricted command to allow any subcommand")
 	}
 
-	// Leading flags are skipped to find the subcommand.
-	if !cfg.IsSubcommandAllowed("git", []string{"--git-dir=/tmp/repo/.git", "status"}) {
-		t.Fatal("expected 'git --git-dir=... status' to be allowed")
+	// Flags before the subcommand are intentionally rejected so the direct
+	// command form remains canonical and unambiguous.
+	if cfg.IsSubcommandAllowed("git", []string{"--git-dir=/tmp/repo/.git", "status"}) {
+		t.Fatal("expected flags before restricted subcommand to be denied")
 	}
-	if !cfg.IsSubcommandAllowed("git", []string{"--no-pager", "log"}) {
-		t.Fatal("expected 'git --no-pager log' to be allowed")
+	if cfg.IsSubcommandAllowed("git", []string{"--no-pager", "log"}) {
+		t.Fatal("expected flags before restricted subcommand to be denied")
 	}
-	if !cfg.IsSubcommandAllowed("git", []string{"--work-tree=/tmp/repo", "--git-dir=/tmp/repo/.git", "diff"}) {
-		t.Fatal("expected 'git --work-tree=... --git-dir=... diff' to be allowed")
+	if cfg.IsSubcommandAllowed("git", []string{"--git-dir", "status", "config"}) {
+		t.Fatal("expected option-value subcommand ambiguity to be denied")
 	}
 
 	// Leading flags with a disallowed subcommand still fails.
@@ -161,8 +162,8 @@ func TestFindSubcommand(t *testing.T) {
 		want string
 	}{
 		{"simple", []string{"status"}, "status"},
-		{"flag then sub", []string{"--git-dir=/path", "log"}, "log"},
-		{"multiple flags", []string{"--no-pager", "-c", "diff"}, "diff"},
+		{"flag then sub is rejected", []string{"--git-dir=/path", "log"}, ""},
+		{"multiple flags are rejected", []string{"--no-pager", "-c", "diff"}, ""},
 		{"no subcommand", []string{"--version"}, ""},
 		{"empty", []string{}, ""},
 	}

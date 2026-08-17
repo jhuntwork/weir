@@ -5,17 +5,23 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
 
-const version = "0.3.0"
+const (
+	version               = "0.3.0"
+	defaultMaxOutputBytes = 1 * 1024 * 1024
+	defaultMaxStreamBytes = 32 * 1024 * 1024
+	defaultMaxFindResults = 1000
+)
 
 func main() {
 	cfg, mCfg, err := loadFromArgs()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[weir] %v\n", err)
-		fmt.Fprintf(os.Stderr, "usage: weir --run-allow cmd1,cmd2,cmd3 [--timeout 60] [--max-lines 1000] [--find-deny /path1,/path2] [--metrics-dir path] [--metrics-retention 30d]\n")
+		fmt.Fprintf(os.Stderr, "usage: weir --run-allow cmd1,cmd2,cmd3 [--timeout 60] [--max-lines 1000] [--max-bytes 1048576] [--max-stream-bytes 33554432] [--max-find-results 1000] [--find-deny /path1,/path2] [--metrics-dir path] [--metrics-retention 30d]\n")
 		os.Exit(1)
 	}
 
@@ -31,7 +37,6 @@ func main() {
 	}()
 
 	fmt.Fprintf(os.Stderr, "[weir] ready (%d commands whitelisted)\n", len(cfg.Commands))
-
 	server := NewServer(cfg, version, metrics)
 	if err := server.Serve(context.Background()); err != nil {
 		fmt.Fprintf(os.Stderr, "[weir] error: %v\n", err)
@@ -55,74 +60,88 @@ func defaultMetricsDir() string {
 	return filepath.Join(home, ".local", "share", "weir", "metrics")
 }
 
+func parseNonNegativeInt(value, flag string) (int, error) {
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("%s must be a non-negative number", flag)
+	}
+	return n, nil
+}
+
 func loadFromArgs() (*Config, *metricsConfig, error) {
 	args := os.Args[1:]
-
 	var allowList string
 	var findDenyPaths string
 	timeout := 60
 	maxLines := 1000
+	maxBytes := defaultMaxOutputBytes
+	maxStreamBytes := defaultMaxStreamBytes
+	maxFindResults := defaultMaxFindResults
 	metricsDir := defaultMetricsDir()
 	metricsRetention := 30 * 24 * time.Hour
 
 	for i := 0; i < len(args); i++ {
-		switch args[i] {
+		flag := args[i]
+		next := func() (string, error) {
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("%s requires a value", flag)
+			}
+			i++
+			return args[i], nil
+		}
+
+		switch flag {
 		case "--run-allow":
-			if i+1 >= len(args) {
-				return nil, nil, fmt.Errorf("--run-allow requires a value")
+			value, err := next()
+			if err != nil {
+				return nil, nil, err
 			}
-			i++
-			allowList = args[i]
+			allowList = value
 		case "--find-deny":
-			if i+1 >= len(args) {
-				return nil, nil, fmt.Errorf("--find-deny requires a value")
+			value, err := next()
+			if err != nil {
+				return nil, nil, err
 			}
-			i++
-			findDenyPaths = args[i]
-		case "--timeout":
-			if i+1 >= len(args) {
-				return nil, nil, fmt.Errorf("--timeout requires a value")
+			findDenyPaths = value
+		case "--timeout", "--max-lines", "--max-bytes", "--max-stream-bytes", "--max-find-results":
+			value, err := next()
+			if err != nil {
+				return nil, nil, err
 			}
-			i++
-			n := 0
-			for _, c := range args[i] {
-				if c < '0' || c > '9' {
-					return nil, nil, fmt.Errorf("--timeout must be a number")
-				}
-				n = n*10 + int(c-'0')
+			n, err := parseNonNegativeInt(value, flag)
+			if err != nil {
+				return nil, nil, err
 			}
-			timeout = n
-		case "--max-lines":
-			if i+1 >= len(args) {
-				return nil, nil, fmt.Errorf("--max-lines requires a value")
+			switch flag {
+			case "--timeout":
+				timeout = n
+			case "--max-lines":
+				maxLines = n
+			case "--max-bytes":
+				maxBytes = n
+			case "--max-stream-bytes":
+				maxStreamBytes = n
+			case "--max-find-results":
+				maxFindResults = n
 			}
-			i++
-			n := 0
-			for _, c := range args[i] {
-				if c < '0' || c > '9' {
-					return nil, nil, fmt.Errorf("--max-lines must be a number")
-				}
-				n = n*10 + int(c-'0')
-			}
-			maxLines = n
 		case "--metrics-dir":
-			if i+1 >= len(args) {
-				return nil, nil, fmt.Errorf("--metrics-dir requires a value")
+			value, err := next()
+			if err != nil {
+				return nil, nil, err
 			}
-			i++
-			metricsDir = args[i]
+			metricsDir = value
 		case "--metrics-retention":
-			if i+1 >= len(args) {
-				return nil, nil, fmt.Errorf("--metrics-retention requires a value")
+			value, err := next()
+			if err != nil {
+				return nil, nil, err
 			}
-			i++
-			dur, err := parseRetention(args[i])
+			dur, err := parseRetention(value)
 			if err != nil {
 				return nil, nil, fmt.Errorf("--metrics-retention: %w", err)
 			}
 			metricsRetention = dur
 		default:
-			return nil, nil, fmt.Errorf("unknown argument: %s", args[i])
+			return nil, nil, fmt.Errorf("unknown argument: %s", flag)
 		}
 	}
 
@@ -134,6 +153,9 @@ func loadFromArgs() (*Config, *metricsConfig, error) {
 		Commands: make(map[string]CommandConfig),
 		Defaults: DefaultConfig{
 			MaxOutputLines: maxLines,
+			MaxOutputBytes: maxBytes,
+			MaxStreamBytes: maxStreamBytes,
+			MaxFindResults: maxFindResults,
 			Timeout:        timeout,
 		},
 	}
@@ -142,15 +164,14 @@ func loadFromArgs() (*Config, *metricsConfig, error) {
 		if entry == "" {
 			continue
 		}
-		// Support "cmd:sub1;sub2;sub3" syntax for subcommand filtering.
 		if colonIdx := strings.IndexByte(entry, ':'); colonIdx > 0 {
 			name := entry[:colonIdx]
 			subs := strings.Split(entry[colonIdx+1:], ";")
 			var subcommands []string
-			for _, s := range subs {
-				s = strings.TrimSpace(s)
-				if s != "" {
-					subcommands = append(subcommands, s)
+			for _, subcommand := range subs {
+				subcommand = strings.TrimSpace(subcommand)
+				if subcommand != "" {
+					subcommands = append(subcommands, subcommand)
 				}
 			}
 			cfg.Commands[name] = CommandConfig{Subcommands: subcommands}
@@ -159,20 +180,15 @@ func loadFromArgs() (*Config, *metricsConfig, error) {
 		}
 	}
 	if findDenyPaths != "" {
-		for _, p := range strings.Split(findDenyPaths, ",") {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				cfg.FindDenyPaths = append(cfg.FindDenyPaths, p)
+		for _, path := range strings.Split(findDenyPaths, ",") {
+			path = strings.TrimSpace(path)
+			if path != "" {
+				cfg.FindDenyPaths = append(cfg.FindDenyPaths, path)
 			}
 		}
 	}
 
-	mCfg := &metricsConfig{
-		Dir:       metricsDir,
-		Retention: metricsRetention,
-	}
-
-	return cfg, mCfg, nil
+	return cfg, &metricsConfig{Dir: metricsDir, Retention: metricsRetention}, nil
 }
 
 // parseRetention parses a duration string like "30d", "7d", "24h".
