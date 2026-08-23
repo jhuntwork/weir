@@ -116,6 +116,20 @@ without needing shell access or a real `find` in the whitelist.
 Hardcoded deny paths (`/`, `/proc`, `/sys`, `/dev`) cannot be overridden.
 Additional paths can be denied via `--find-deny`.
 
+### jobs
+
+`job_start` launches an inspectable server-lifetime process through the same
+restricted command surface as `run`. Jobs are Weir-owned local process trees;
+stopping one does not claim that remote or durable effects were rolled back.
+Use `job_get`, `job_logs`, and `job_list` for inspection, `job_cancel` for
+explicit cancellation, and `job_cleanup` for retention cleanup.
+
+`job_wait` accepts an opaque job ID and a required timeout from 1 to 300
+seconds. It returns immediately for terminal jobs, otherwise waits until the
+job becomes terminal or the wait deadline elapses. A queued, running, or
+cancellation-requested result means only that the wait deadline elapsed.
+`job_wait` never changes the job's own timeout and never cancels the job.
+
 ## Build
 
 ```

@@ -49,6 +49,17 @@ type metricsConfig struct {
 	Retention time.Duration
 }
 
+func defaultJobsDir() string {
+	if dir := os.Getenv("XDG_STATE_HOME"); dir != "" {
+		return filepath.Join(dir, "weir", "jobs")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".local", "state", "weir", "jobs")
+}
+
 func defaultMetricsDir() string {
 	if dir := os.Getenv("XDG_DATA_HOME"); dir != "" {
 		return filepath.Join(dir, "weir", "metrics")
@@ -158,6 +169,7 @@ func loadFromArgs() (*Config, *metricsConfig, error) {
 			MaxFindResults: maxFindResults,
 			Timeout:        timeout,
 		},
+		Jobs: JobConfig{Dir: defaultJobsDir(), MaxConcurrent: 2, LogBytes: maxBytes, Retention: 7 * 24 * time.Hour},
 	}
 	for _, entry := range strings.Split(allowList, ",") {
 		entry = strings.TrimSpace(entry)
