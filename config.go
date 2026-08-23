@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Config defines the whitelist and default behavior.
@@ -11,6 +12,15 @@ type Config struct {
 	Commands      map[string]CommandConfig
 	Defaults      DefaultConfig
 	FindDenyPaths []string // additional paths to reject in find tool
+	Jobs          JobConfig
+}
+
+// JobConfig controls persisted, server-lifetime local job execution.
+type JobConfig struct {
+	Dir           string
+	MaxConcurrent int
+	LogBytes      int
+	Retention     time.Duration
 }
 
 // CommandConfig is per-command settings.

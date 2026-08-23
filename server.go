@@ -68,6 +68,7 @@ type Server struct {
 	tools    []Tool
 	handlers map[string]toolHandler
 	metrics  *MetricsCollector
+	jobs     *JobManager
 }
 
 func NewServer(cfg *Config, version string, metrics *MetricsCollector) *Server {
@@ -77,12 +78,19 @@ func NewServer(cfg *Config, version string, metrics *MetricsCollector) *Server {
 		handlers: make(map[string]toolHandler),
 		metrics:  metrics,
 	}
+	jobs, err := NewJobManager(cfg)
+	if err != nil {
+		panic(fmt.Sprintf("weir jobs: %v", err))
+	}
+	s.jobs = jobs
 	s.registerTools()
+	s.registerJobTools()
 	return s
 }
 
 // Serve runs the JSON-RPC loop on stdin/stdout.
 func (s *Server) Serve(ctx context.Context) error {
+	defer s.jobs.Shutdown()
 	scanner := bufio.NewScanner(os.Stdin)
 	const maxLineSize = 1 * 1024 * 1024
 	buf := make([]byte, 0, 64*1024)
