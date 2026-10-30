@@ -122,7 +122,12 @@ Additional paths can be denied via `--find-deny`.
 restricted command surface as `run`. Jobs are Weir-owned local process trees;
 stopping one does not claim that remote or durable effects were rolled back.
 Use `job_get`, `job_logs`, and `job_list` for inspection, `job_cancel` for
-explicit cancellation, and `job_cleanup` for retention cleanup.
+explicit cancellation, and `job_cleanup` for retention cleanup. Lifecycle tools
+return metadata only; captured output is never included in `job_get`,
+`job_wait`, `job_list`, or `job_cancel` responses. Use `job_logs` explicitly,
+with per-stream limits of 32 KiB and 1000 lines by default, up to 64 KiB and
+5000 lines. `job_list` returns at most 50 jobs by default and accepts `limit`
+(up to 100) and `offset` for pagination.
 
 `job_wait` accepts an opaque job ID and a required timeout from 1 to 300
 seconds. It returns immediately for terminal jobs, otherwise waits until the

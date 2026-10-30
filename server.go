@@ -54,6 +54,8 @@ type ToolResult struct {
 	IsError bool           `json:"isError,omitempty"`
 }
 
+const maxSerializedResponseBytes = 256 * 1024
+
 type ContentBlock struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
@@ -158,14 +160,40 @@ func (s *Server) handleToolCall(ctx context.Context, enc *json.Encoder, req *req
 }
 
 func (s *Server) writeResult(enc *json.Encoder, id json.RawMessage, result any) {
-	if err := enc.Encode(response{JSONRPC: "2.0", ID: id, Result: result}); err != nil {
-		fmt.Fprintln(os.Stderr, "weir: write result:", err)
-	}
+	s.writeResponse(enc, response{JSONRPC: "2.0", ID: id, Result: result})
 }
 
 func (s *Server) writeError(enc *json.Encoder, id json.RawMessage, code int, msg string) {
-	if err := enc.Encode(response{JSONRPC: "2.0", ID: id, Error: &rpcError{Code: code, Message: msg}}); err != nil {
-		fmt.Fprintln(os.Stderr, "weir: write error:", err)
+	s.writeResponse(enc, response{JSONRPC: "2.0", ID: id, Error: &rpcError{Code: code, Message: msg}})
+}
+
+func boundedResponseBytes(resp response) []byte {
+	data, err := json.Marshal(resp)
+	if err == nil && len(data)+1 <= maxSerializedResponseBytes {
+		return data
+	}
+
+	fallback := response{
+		JSONRPC: resp.JSONRPC,
+		ID:      resp.ID,
+		Result: &ToolResult{
+			Content: []ContentBlock{{
+				Type: "text",
+				Text: "Weir response exceeded the serialized response limit and was replaced with this error.",
+			}},
+			IsError: true,
+		},
+	}
+	data, err = json.Marshal(fallback)
+	if err != nil {
+		return []byte(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"failed to encode response"}}`)
+	}
+	return data
+}
+
+func (s *Server) writeResponse(enc *json.Encoder, resp response) {
+	if err := enc.Encode(json.RawMessage(boundedResponseBytes(resp))); err != nil {
+		fmt.Fprintln(os.Stderr, "weir: write response:", err)
 	}
 }
 

@@ -331,6 +331,36 @@ func (m *JobManager) List() []*Job {
 	return out
 }
 
+// ListPage returns a newest-first page and whether more jobs remain after it.
+func (m *JobManager) ListPage(limit, offset int) ([]*Job, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if limit <= 0 {
+		return []*Job{}, offset < len(m.jobs)
+	}
+	ordered := make([]*Job, 0, len(m.jobs))
+	for _, r := range m.jobs {
+		ordered = append(ordered, r.job)
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].CreatedAt.After(ordered[j].CreatedAt) })
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(ordered) {
+		return []*Job{}, false
+	}
+	end := offset + limit
+	if end > len(ordered) {
+		end = len(ordered)
+	}
+	out := make([]*Job, end-offset)
+	for i := offset; i < end; i++ {
+		out[i-offset] = copyJob(ordered[i])
+	}
+	return out, end < len(ordered)
+}
+
 func (m *JobManager) Cancel(id string) (*Job, error) {
 	m.mu.Lock()
 	r := m.jobs[id]
